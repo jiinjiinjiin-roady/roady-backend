@@ -12,7 +12,11 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Pydantic Settings and `.env` support
 - Async SQLAlchemy engine and `AsyncSession`
 - Async Alembic migration environment
-- `accounts` table and `Account` SQLAlchemy model
+- SQLAlchemy models and Alembic migrations through phase 2:
+  - accounts
+  - driver profiles, saved places, and search histories
+  - driving sessions, location samples, safety behavior events, interventions, and driver responses
+  - agent conversations, agent messages, tool executions, and report exports
 - Default admin account seed command
 - `GET /api/v1/health`
 - Docker Compose stack for backend and MySQL
@@ -24,8 +28,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Account CRUD API
 - Bootstrap/Profile/Driving Session APIs
 - WebSocket
-- ViT, Gemini, email, reports, and risk policy features
-- ERD tables other than `accounts`
+- ViT inference, Gemini calls, email delivery, report file generation, and risk policy services
 
 The default admin account is only seed data for early development. It is not a
 login account, has no password, and must not be treated as production
@@ -107,6 +110,19 @@ docker compose exec backend alembic revision -m "describe change"
 ```
 
 The first revision is `0001_create_accounts`.
+
+Current migration chain:
+
+```text
+0001_create_accounts
+0002_profile_place_tables
+0003_driving_safety_tables
+0004_agent_report_tables
+```
+
+`report_exports` is intentionally linked only to `driver_profiles`; there is no
+direct report-to-driving-session join table in the current ERD. The active
+driving session uniqueness rule uses a MySQL generated column and unique index.
 
 ## Seed
 

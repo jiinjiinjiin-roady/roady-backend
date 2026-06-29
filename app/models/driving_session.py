@@ -22,6 +22,7 @@ from app.db.base import Base
 from app.utils.uuid import generate_uuid4
 
 if TYPE_CHECKING:
+    from app.models.agent_conversation import AgentConversation
     from app.models.behavior_event import BehaviorEvent
     from app.models.driver_profile import DriverProfile
     from app.models.location_sample import LocationSample
@@ -189,6 +190,12 @@ class DrivingSession(Base):
     )
     behavior_events: Mapped[list[BehaviorEvent]] = relationship(
         "BehaviorEvent",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    agent_conversations: Mapped[list[AgentConversation]] = relationship(
+        "AgentConversation",
         back_populates="session",
         cascade="all, delete-orphan",
         passive_deletes=True,

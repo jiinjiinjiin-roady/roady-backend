@@ -13,6 +13,7 @@ from app.db.base import Base
 from app.utils.uuid import generate_uuid4
 
 if TYPE_CHECKING:
+    from app.models.agent_conversation import AgentConversation
     from app.models.driving_session import DrivingSession
     from app.models.intervention import Intervention
 
@@ -175,5 +176,10 @@ class BehaviorEvent(Base):
         "Intervention",
         back_populates="behavior_event",
         cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    agent_conversations: Mapped[list[AgentConversation]] = relationship(
+        "AgentConversation",
+        back_populates="trigger_behavior_event",
         passive_deletes=True,
     )

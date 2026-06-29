@@ -37,6 +37,22 @@ async def test_accounts_table_matches_mysql_spec() -> None:
         tables_result = await session.execute(text("SHOW TABLES"))
         tables = set(tables_result.scalars().all())
 
+    expected_tables = {
+        "accounts",
+        "driver_profiles",
+        "saved_places",
+        "search_histories",
+        "driving_sessions",
+        "location_samples",
+        "behavior_events",
+        "interventions",
+        "driver_responses",
+        "agent_conversations",
+        "agent_messages",
+        "tool_executions",
+        "report_exports",
+    }
+
     assert "`id` char(36)" in create_sql
     assert "`email` varchar(320)" in create_sql
     assert "`created_at` datetime(6) not null" in create_sql
@@ -47,17 +63,12 @@ async def test_accounts_table_matches_mysql_spec() -> None:
     assert "engine=innodb" in create_sql
     assert "default charset=utf8mb4" in create_sql
     assert "collate=utf8mb4_0900_ai_ci" in create_sql
-    assert "accounts" in tables
-    assert "driver_profiles" in tables
-    assert "saved_places" in tables
-    assert "search_histories" in tables
-    assert "driving_sessions" in tables
-    assert "location_samples" in tables
-    assert "behavior_events" in tables
-    assert "interventions" in tables
-    assert "driver_responses" in tables
-    assert "agent_conversations" not in tables
-    assert "report_exports" not in tables
+    assert expected_tables <= tables
+    assert "alembic_version" in tables
+    assert len(tables) == len(expected_tables) + 1
+    assert "report_session_links" not in tables
+    assert "report_export_sessions" not in tables
+    assert "driving_session_report_exports" not in tables
 
     await dispose_engine()
 

@@ -12,14 +12,18 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.models import (
     Account,
+    AgentConversation,
+    AgentMessage,
     BehaviorEvent,
     DriverProfile,
     DriverResponse,
     DrivingSession,
     Intervention,
     LocationSample,
+    ReportExport,
     SavedPlace,
     SearchHistory,
+    ToolExecution,
 )
 
 config = context.config
@@ -41,6 +45,10 @@ _MODEL_IMPORTS = (
     BehaviorEvent,
     Intervention,
     DriverResponse,
+    AgentConversation,
+    AgentMessage,
+    ToolExecution,
+    ReportExport,
 )
 target_metadata = Base.metadata
 

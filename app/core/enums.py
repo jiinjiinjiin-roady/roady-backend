@@ -109,3 +109,68 @@ class DriverResponseType(StrEnum):
     BUTTON_DISMISSED = "BUTTON_DISMISSED"
     NO_RESPONSE = "NO_RESPONSE"
     BEHAVIOR_REPEATED = "BEHAVIOR_REPEATED"
+
+
+class ConversationMode(StrEnum):
+    SAFETY = "SAFETY"
+    GENERAL_ASSISTANT = "GENERAL_ASSISTANT"
+
+
+class ConversationStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+    ABORTED = "ABORTED"
+
+
+class AgentMessageRole(StrEnum):
+    USER = "USER"
+    AGENT = "AGENT"
+    SYSTEM = "SYSTEM"
+    TOOL = "TOOL"
+
+
+class AgentInputType(StrEnum):
+    VOICE = "VOICE"
+    TEXT = "TEXT"
+    BUTTON = "BUTTON"
+    SYSTEM_EVENT = "SYSTEM_EVENT"
+
+
+class ToolConfirmationStatus(StrEnum):
+    NOT_REQUIRED = "NOT_REQUIRED"
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
+class ToolExecutionStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class ReportPeriodType(StrEnum):
+    WEEKLY = "WEEKLY"
+    MONTHLY = "MONTHLY"
+    CUSTOM = "CUSTOM"
+
+
+class ReportExportStatus(StrEnum):
+    PENDING = "PENDING"
+    GENERATING = "GENERATING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class EmailStatus(StrEnum):
+    NOT_REQUESTED = "NOT_REQUESTED"
+    PENDING = "PENDING"
+    SENT = "SENT"
+    FAILED = "FAILED"
+
+
+class FailureStage(StrEnum):
+    EXPORT = "EXPORT"
+    EMAIL = "EMAIL"
