@@ -17,12 +17,14 @@ RUN python -m pip install --upgrade pip \
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY docker-entrypoint.sh ./
 
 RUN mkdir -p /app/storage/reports /app/storage/profile-images /app/artifacts \
+    && chmod +x /app/docker-entrypoint.sh \
     && chown -R app:app /app
 
 USER app
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "/app/docker-entrypoint.sh"]

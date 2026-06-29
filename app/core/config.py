@@ -2,8 +2,9 @@ import json
 from collections.abc import Iterable
 from functools import lru_cache
 from urllib.parse import quote_plus
+from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,6 +63,8 @@ class Settings(BaseSettings):
     mysql_root_password: str = Field(default="", repr=False)
     mysql_exposed_port: int = 3306
     db_pool_recycle_seconds: int = 1800
+    default_admin_account_id: str = "00000000-0000-0000-0000-000000000001"
+    default_admin_email: str | None = "admin@example.com"
     backend_exposed_port: int = 8000
     model_path: str = "/app/artifacts/models/best_vit.pth"
     model_version: str = "vit-dms-1.0.0"
@@ -86,6 +89,19 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return parse_cors_origins(self.cors_origins)
+
+    @field_validator("default_admin_account_id", mode="before")
+    @classmethod
+    def validate_default_admin_account_id(cls, value: object) -> str:
+        return str(UUID(str(value)))
+
+    @field_validator("default_admin_email", mode="before")
+    @classmethod
+    def normalize_default_admin_email(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        email = str(value).strip()
+        return email or None
 
     @property
     def database_url(self) -> str:
