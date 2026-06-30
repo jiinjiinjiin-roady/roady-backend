@@ -41,6 +41,8 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - `POST /api/v1/driving-sessions`
   - `GET /api/v1/driving-sessions/active`
   - `GET /api/v1/driving-sessions/{sessionId}`
+  - `GET /api/v1/driving-sessions/{sessionId}/timeline`
+  - `GET /api/v1/driving-sessions/{sessionId}/locations`
   - `POST /api/v1/driving-sessions/{sessionId}/end`
   - `GET /api/v1/profiles/{profileId}/driving-sessions`
 - Docker Compose stack for backend and MySQL
@@ -226,6 +228,14 @@ Invoke-RestMethod `
     -Method Get `
     -Uri "http://localhost:8000/api/v1/driving-sessions/$($session.id)"
 
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://localhost:8000/api/v1/driving-sessions/$($session.id)/timeline"
+
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://localhost:8000/api/v1/driving-sessions/$($session.id)/locations?limit=1000"
+
 $endBody = @{
     endReason = "USER_REQUEST"
     endLocation = @{
@@ -321,22 +331,24 @@ Latest verified result on 2026-07-01 KST / 2026-06-30 UTC:
 
 ```text
 ruff check . -> passed
-pytest -ra -> 179 passed
+pytest -ra -> 207 passed
 python -m compileall app -> passed
 Saved Place MySQL Integration -> passed
 Search History MySQL Integration -> passed
 Driving Session MySQL/API Integration -> passed
 Driving Session concurrent start Integration -> passed
+Driving Session Timeline/Location MySQL Integration -> passed
 Concurrent fixed-place/favorite tests -> passed
 PowerShell smoke -> MODEL_NOT_AVAILABLE path verified because vitModel is DOWN
-OpenAPI live check -> required 3-3A paths present
+OpenAPI live check -> required 3-3B paths present
 Swagger /docs -> 200 OK
 Alembic current/head -> 0004_agent_report_tables
 ```
 
-No Alembic revision was created for 3-3A, and the DB schema did not change.
+No Alembic revision was created for 3-3B, and the DB schema did not change.
 safetyScore is intentionally null until the future risk/safety score policy is
-implemented.
+implemented. Timeline and location APIs are read-only; they do not create,
+update, delete, commit, or finalize driving-session data.
 
 ## Stop Containers
 

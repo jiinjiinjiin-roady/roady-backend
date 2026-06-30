@@ -16,8 +16,10 @@ from app.schemas.driving_session import (
     DrivingSessionEndRequest,
     DrivingSessionEndResponse,
     DrivingSessionHistoryResponse,
+    DrivingSessionLocationsResponse,
     DrivingSessionStartRequest,
     DrivingSessionStartResponse,
+    DrivingSessionTimelineResponse,
 )
 from app.services.driving_session_service import DrivingSessionService
 from app.utils.uuid import normalize_uuid_string
@@ -132,6 +134,47 @@ async def get_driving_session(
     service: DrivingSessionServiceDep,
 ) -> DrivingSessionDetailResponse:
     return await service.get_session_detail(current_account, parse_session_id(session_id))
+
+
+@router.get(
+    "/driving-sessions/{sessionId}/timeline",
+    response_model=DrivingSessionTimelineResponse,
+    responses={
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def get_driving_session_timeline(
+    session_id: SessionPath,
+    current_account: CurrentAccount,
+    service: DrivingSessionServiceDep,
+) -> DrivingSessionTimelineResponse:
+    return await service.get_session_timeline(current_account, parse_session_id(session_id))
+
+
+@router.get(
+    "/driving-sessions/{sessionId}/locations",
+    response_model=DrivingSessionLocationsResponse,
+    responses={
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def get_driving_session_locations(
+    session_id: SessionPath,
+    current_account: CurrentAccount,
+    service: DrivingSessionServiceDep,
+    from_value: str | None = Query(default=None, alias="from"),
+    to_value: str | None = Query(default=None, alias="to"),
+    limit: int = Query(default=1000, ge=1, le=5000),
+) -> DrivingSessionLocationsResponse:
+    return await service.get_session_locations(
+        current_account,
+        parse_session_id(session_id),
+        from_value=from_value,
+        to_value=to_value,
+        limit=limit,
+    )
 
 
 @router.post(

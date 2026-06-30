@@ -5,8 +5,14 @@ from pydantic import ValidationError
 
 from app.schemas.driving_session import (
     ActiveDrivingSessionResponse,
+    BehaviorEventTimelineItemResponse,
+    DriverResponseTimelineItemResponse,
     DrivingSessionEndRequest,
+    DrivingSessionLocationsResponse,
     DrivingSessionStartRequest,
+    DrivingSessionTimelineResponse,
+    InterventionTimelineItemResponse,
+    LocationSampleResponse,
 )
 
 PROFILE_ID = "274d9648-e78a-4630-a8e8-e63070dc3c19"
@@ -119,3 +125,95 @@ def test_active_response_serializes_camel_case_and_utc_datetime() -> None:
     assert payload["startedAt"] == "2026-06-30T01:02:03.123456Z"
     assert payload["destinationName"] == "Test Destination"
     assert payload["webSocketUrl"].startswith("/ws/v1/driving-sessions/")
+
+
+def test_timeline_response_serializes_contract_fields_only() -> None:
+    response = DrivingSessionTimelineResponse(
+        session_id="67371b45-204c-4d87-b8f7-8a334229a41e",
+        events=[
+            BehaviorEventTimelineItemResponse(
+                event_id="b9ce8edb-1bd7-4aaf-9178-4894bf876603",
+                behavior_type="PHONE_USE",
+                status="ACTIVE",
+                started_at=datetime(2026, 6, 30, 1, 2, 3, 123456),
+                ended_at=None,
+                duration_ms=None,
+                average_confidence=0.87,
+                maximum_confidence=0.94,
+                risk_level=2,
+                driving_state="MOVING",
+                speed_kph=None,
+                resolution_reason=None,
+                interventions=[
+                    InterventionTimelineItemResponse(
+                        intervention_id="65045f20-4ae0-4471-af69-d18e74a67b02",
+                        level=2,
+                        intervention_type="WARNING",
+                        ui_text="Watch the road.",
+                        speech_text=None,
+                        status="WAITING_RESPONSE",
+                        responses=[
+                            DriverResponseTimelineItemResponse(
+                                response_type="BEHAVIOR_CORRECTED",
+                                behavior_corrected=None,
+                                response_latency_ms=None,
+                                responded_at=datetime(2026, 6, 30, 1, 2, 6, 123456),
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    payload = response.model_dump(by_alias=True, mode="json")
+    event = payload["events"][0]
+    intervention = event["interventions"][0]
+    driver_response = intervention["responses"][0]
+
+    assert payload["sessionId"] == "67371b45-204c-4d87-b8f7-8a334229a41e"
+    assert event["eventId"] == "b9ce8edb-1bd7-4aaf-9178-4894bf876603"
+    assert event["startedAt"] == "2026-06-30T01:02:03.123456Z"
+    assert event["endedAt"] is None
+    assert event["durationMs"] is None
+    assert event["speedKph"] is None
+    assert event["resolutionReason"] is None
+    assert event["averageConfidence"] == 0.87
+    assert intervention["interventionId"] == "65045f20-4ae0-4471-af69-d18e74a67b02"
+    assert intervention["speechText"] is None
+    assert driver_response["respondedAt"] == "2026-06-30T01:02:06.123456Z"
+    assert driver_response["behaviorCorrected"] is None
+    assert driver_response["responseLatencyMs"] is None
+    assert "profileId" not in payload
+    assert "id" not in event
+    assert "behaviorEventId" not in intervention
+    assert "interventionId" not in driver_response
+
+
+def test_locations_response_serializes_contract_fields_only() -> None:
+    response = DrivingSessionLocationsResponse(
+        session_id="67371b45-204c-4d87-b8f7-8a334229a41e",
+        samples=[
+            LocationSampleResponse(
+                latitude=37.5501,
+                longitude=127.0734,
+                speed_kph=None,
+                driving_state="TEMPORARY_STOP",
+                accuracy_meters=None,
+                source="GPS",
+                recorded_at=datetime(2026, 6, 30, 1, 2, 3, 123456),
+            )
+        ],
+        count=1,
+    )
+
+    payload = response.model_dump(by_alias=True, mode="json")
+    sample = payload["samples"][0]
+
+    assert payload["sessionId"] == "67371b45-204c-4d87-b8f7-8a334229a41e"
+    assert payload["count"] == 1
+    assert sample["speedKph"] is None
+    assert sample["accuracyMeters"] is None
+    assert sample["recordedAt"] == "2026-06-30T01:02:03.123456Z"
+    assert "id" not in sample
+    assert "sessionId" not in sample

@@ -43,7 +43,11 @@ DRIVING_SESSION_VALIDATION_MESSAGES: dict[str, str] = {
     ErrorCode.INVALID_PAGE.value: "Page must be greater than or equal to 1.",
     ErrorCode.INVALID_PAGE_SIZE.value: "Page size must be between 1 and 100.",
     ErrorCode.INVALID_DATE_RANGE.value: "Driving session date range is invalid.",
+    ErrorCode.INVALID_TIME_RANGE.value: "Location query time range is invalid.",
     ErrorCode.INVALID_SESSION_STATUS.value: "Driving session status is invalid.",
+    ErrorCode.LOCATION_LIMIT_EXCEEDED.value: (
+        "Location sample limit must be between 1 and 5000."
+    ),
 }
 
 MISSING_FIELD_ERROR_CODES: dict[str, ErrorCode] = {
@@ -179,6 +183,12 @@ def _driving_session_validation_error(
 
     if field in {"startedFrom", "startedTo"}:
         return _driving_message(ErrorCode.INVALID_DATE_RANGE)
+
+    if field in {"from", "to"}:
+        return _driving_message(ErrorCode.INVALID_TIME_RANGE)
+
+    if field == "limit":
+        return _driving_message(ErrorCode.LOCATION_LIMIT_EXCEEDED)
 
     if "endLocation" in loc_set:
         return _driving_message(ErrorCode.INVALID_END_LOCATION)

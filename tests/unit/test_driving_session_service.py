@@ -1,10 +1,14 @@
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from app.core.exceptions import AppException
-from app.services.driving_session_service import DrivingSessionService
+from app.services.driving_session_service import (
+    DEFAULT_LOCATION_SAMPLE_LIMIT,
+    DrivingSessionService,
+)
 from app.utils.distance import Coordinate
 
 
@@ -65,6 +69,157 @@ def test_history_date_range_uses_inclusive_to_date() -> None:
 
     assert started_from == datetime(2026, 6, 29, 0, 0, 0)
     assert started_to == datetime(2026, 7, 1, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("from_value", "to_value", "expected_from", "expected_to"),
+    [
+        (None, None, None, None),
+        ("2026-06-28T03:10:00Z", None, datetime(2026, 6, 28, 3, 10, 0), None),
+        (None, "2026-06-28T03:10:00Z", None, datetime(2026, 6, 28, 3, 10, 0)),
+        (
+            "2026-06-28T12:10:00+09:00",
+            "2026-06-28T12:20:00+09:00",
+            datetime(2026, 6, 28, 3, 10, 0),
+            datetime(2026, 6, 28, 3, 20, 0),
+        ),
+        (
+            "2026-06-28T03:10:00Z",
+            "2026-06-28T03:10:00Z",
+            datetime(2026, 6, 28, 3, 10, 0),
+            datetime(2026, 6, 28, 3, 10, 0),
+        ),
+    ],
+)
+def test_location_query_time_validation_and_utc_normalization(
+    from_value: str | None,
+    to_value: str | None,
+    expected_from: datetime | None,
+    expected_to: datetime | None,
+) -> None:
+    recorded_from, recorded_to, limit = DrivingSessionService._parse_location_query(
+        from_value=from_value,
+        to_value=to_value,
+        limit=DEFAULT_LOCATION_SAMPLE_LIMIT,
+    )
+
+    assert recorded_from == expected_from
+    assert recorded_to == expected_to
+    assert limit == DEFAULT_LOCATION_SAMPLE_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("from_value", "to_value"),
+    [
+        ("2026-06-28T03:20:00Z", "2026-06-28T03:10:00Z"),
+        ("2026-06-28T03:10:00", None),
+        ("not-a-date", None),
+        (None, ""),
+    ],
+)
+def test_location_query_time_validation_errors(
+    from_value: str | None,
+    to_value: str | None,
+) -> None:
+    with pytest.raises(AppException) as exc_info:
+        DrivingSessionService._parse_location_query(
+            from_value=from_value,
+            to_value=to_value,
+            limit=DEFAULT_LOCATION_SAMPLE_LIMIT,
+        )
+
+    assert exc_info.value.error_code == "INVALID_TIME_RANGE"
+
+
+@pytest.mark.parametrize("limit", [1, DEFAULT_LOCATION_SAMPLE_LIMIT, 5000])
+def test_location_limit_accepts_valid_values(limit: int) -> None:
+    assert DrivingSessionService._validate_location_limit(limit) == limit
+
+
+@pytest.mark.parametrize("limit", [0, 5001])
+def test_location_limit_rejects_invalid_values(limit: int) -> None:
+    with pytest.raises(AppException) as exc_info:
+        DrivingSessionService._validate_location_limit(limit)
+
+    assert exc_info.value.error_code == "LOCATION_LIMIT_EXCEEDED"
+
+
+def test_timeline_response_groups_interventions_and_responses() -> None:
+    event_without_interventions = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000001",
+        behavior_type="DROWSINESS",
+        status="ACTIVE",
+        started_at=datetime(2026, 6, 30, 1, 0, 0),
+        ended_at=None,
+        duration_ms=None,
+        average_confidence=Decimal("0.7500"),
+        maximum_confidence=Decimal("0.8000"),
+        risk_level=1,
+        driving_state="MOVING",
+        speed_kph=None,
+        resolution_reason=None,
+    )
+    event_with_interventions = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000002",
+        behavior_type="PHONE_USE",
+        status="RESOLVED",
+        started_at=datetime(2026, 6, 30, 1, 1, 0),
+        ended_at=datetime(2026, 6, 30, 1, 1, 6),
+        duration_ms=6000,
+        average_confidence=Decimal("0.8700"),
+        maximum_confidence=Decimal("0.9400"),
+        risk_level=2,
+        driving_state="MOVING",
+        speed_kph=Decimal("38.50"),
+        resolution_reason="BEHAVIOR_CORRECTED",
+    )
+    intervention_with_response = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000011",
+        behavior_event_id=event_with_interventions.id,
+        level=2,
+        intervention_type="WARNING",
+        ui_text="Watch the road.",
+        speech_text="Please watch the road.",
+        status="RESOLVED",
+    )
+    intervention_without_response = SimpleNamespace(
+        id="00000000-0000-0000-0000-000000000012",
+        behavior_event_id=event_with_interventions.id,
+        level=3,
+        intervention_type="WARNING",
+        ui_text="Still detected.",
+        speech_text=None,
+        status="WAITING_RESPONSE",
+    )
+    response = SimpleNamespace(
+        intervention_id=intervention_with_response.id,
+        response_type="BEHAVIOR_CORRECTED",
+        behavior_corrected=True,
+        response_latency_ms=2800,
+        responded_at=datetime(2026, 6, 30, 1, 1, 4, 800000),
+    )
+
+    timeline = DrivingSessionService._build_timeline_response(
+        session_id="67371b45-204c-4d87-b8f7-8a334229a41e",
+        events=[event_without_interventions, event_with_interventions],
+        interventions=[intervention_with_response, intervention_without_response],
+        responses=[response],
+    )
+    payload = timeline.model_dump(by_alias=True, mode="json")
+
+    assert [event["eventId"] for event in payload["events"]] == [
+        event_without_interventions.id,
+        event_with_interventions.id,
+    ]
+    assert payload["events"][0]["interventions"] == []
+    assert [item["interventionId"] for item in payload["events"][1]["interventions"]] == [
+        intervention_with_response.id,
+        intervention_without_response.id,
+    ]
+    assert payload["events"][1]["interventions"][0]["responses"][0]["responseType"] == (
+        "BEHAVIOR_CORRECTED"
+    )
+    assert payload["events"][1]["interventions"][1]["responses"] == []
 
 
 @pytest.mark.parametrize(

@@ -314,4 +314,70 @@ class DrivingSessionHistoryResponse(ApiBaseModel):
         return cls(items=items, page=page, size=size, total=total, total_pages=total_pages)
 
 
+class DriverResponseTimelineItemResponse(ApiBaseModel):
+    response_type: str
+    behavior_corrected: bool | None
+    response_latency_ms: int | None
+    responded_at: datetime
+
+    @field_serializer("responded_at")
+    def serialize_responded_at(self, value: datetime) -> str:
+        return format_utc_datetime(value)
+
+
+class InterventionTimelineItemResponse(ApiBaseModel):
+    intervention_id: str
+    level: int
+    intervention_type: str
+    ui_text: str
+    speech_text: str | None
+    status: str
+    responses: list[DriverResponseTimelineItemResponse]
+
+
+class BehaviorEventTimelineItemResponse(ApiBaseModel):
+    event_id: str
+    behavior_type: str
+    status: str
+    started_at: datetime
+    ended_at: datetime | None
+    duration_ms: int | None
+    average_confidence: float
+    maximum_confidence: float
+    risk_level: int
+    driving_state: str
+    speed_kph: float | None
+    resolution_reason: str | None
+    interventions: list[InterventionTimelineItemResponse]
+
+    @field_serializer("started_at", "ended_at")
+    def serialize_datetime(self, value: datetime | None) -> str | None:
+        return None if value is None else format_utc_datetime(value)
+
+
+class DrivingSessionTimelineResponse(ApiBaseModel):
+    session_id: str
+    events: list[BehaviorEventTimelineItemResponse]
+
+
+class LocationSampleResponse(ApiBaseModel):
+    latitude: float
+    longitude: float
+    speed_kph: float | None
+    driving_state: str
+    accuracy_meters: float | None
+    source: str
+    recorded_at: datetime
+
+    @field_serializer("recorded_at")
+    def serialize_recorded_at(self, value: datetime) -> str:
+        return format_utc_datetime(value)
+
+
+class DrivingSessionLocationsResponse(ApiBaseModel):
+    session_id: str
+    samples: list[LocationSampleResponse]
+    count: int
+
+
 SESSION_STATUS_VALUES = {item.value for item in DrivingSessionStatus}
