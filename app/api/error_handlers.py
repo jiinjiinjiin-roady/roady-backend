@@ -32,6 +32,20 @@ QUERY_VALIDATION_MESSAGES: dict[str, str] = {
     ErrorCode.INVALID_PAGE_SIZE.value: "페이지 크기는 1 이상 100 이하로 설정해야 합니다.",
 }
 
+DRIVING_SESSION_VALIDATION_MESSAGES: dict[str, str] = {
+    ErrorCode.INVALID_PROFILE_ID.value: "Profile ID format is invalid.",
+    ErrorCode.MISSING_PROFILE_ID.value: "profileId query parameter is required.",
+    ErrorCode.INVALID_SESSION_ID.value: "Driving session ID format is invalid.",
+    ErrorCode.INVALID_START_LOCATION.value: "Start location is invalid.",
+    ErrorCode.INVALID_DESTINATION.value: "Destination is invalid.",
+    ErrorCode.INVALID_END_LOCATION.value: "End location is invalid.",
+    ErrorCode.INVALID_END_REASON.value: "End reason is invalid.",
+    ErrorCode.INVALID_PAGE.value: "Page must be greater than or equal to 1.",
+    ErrorCode.INVALID_PAGE_SIZE.value: "Page size must be between 1 and 100.",
+    ErrorCode.INVALID_DATE_RANGE.value: "Driving session date range is invalid.",
+    ErrorCode.INVALID_SESSION_STATUS.value: "Driving session status is invalid.",
+}
+
 MISSING_FIELD_ERROR_CODES: dict[str, ErrorCode] = {
     "displayName": ErrorCode.INVALID_DISPLAY_NAME,
     "display_name": ErrorCode.INVALID_DISPLAY_NAME,
@@ -134,6 +148,72 @@ def _query_validation_error(errors: list[dict[str, object]]) -> tuple[str, str] 
     return None
 
 
+def _driving_message(error_code: ErrorCode) -> tuple[str, str]:
+    return error_code.value, DRIVING_SESSION_VALIDATION_MESSAGES[error_code.value]
+
+
+def _driving_session_validation_error(
+    errors: list[dict[str, object]],
+    path: str,
+) -> tuple[str, str] | None:
+    if not errors:
+        return None
+
+    first_error = errors[0]
+    error_type = str(first_error.get("type", ""))
+    loc = first_error.get("loc", ())
+    loc_parts = [str(part) for part in loc] if isinstance(loc, tuple | list) else []
+    field = loc_parts[-1] if loc_parts else ""
+    loc_set = set(loc_parts)
+
+    if field == "profileId" and error_type == "missing" and loc_parts[:1] == ["query"]:
+        return _driving_message(ErrorCode.MISSING_PROFILE_ID)
+
+    if field in {"page", "size"}:
+        return _driving_message(
+            ErrorCode.INVALID_PAGE if field == "page" else ErrorCode.INVALID_PAGE_SIZE
+        )
+
+    if field == "status":
+        return _driving_message(ErrorCode.INVALID_SESSION_STATUS)
+
+    if field in {"startedFrom", "startedTo"}:
+        return _driving_message(ErrorCode.INVALID_DATE_RANGE)
+
+    if "endLocation" in loc_set:
+        return _driving_message(ErrorCode.INVALID_END_LOCATION)
+
+    if "startLocation" in loc_set:
+        return _driving_message(ErrorCode.INVALID_START_LOCATION)
+
+    if "destination" in loc_set:
+        return _driving_message(ErrorCode.INVALID_DESTINATION)
+
+    if field in {"profileId", "profile_id"}:
+        return _driving_message(ErrorCode.INVALID_PROFILE_ID)
+
+    if field in {"sessionId", "session_id"}:
+        return _driving_message(ErrorCode.INVALID_SESSION_ID)
+
+    if field in {"endReason", "end_reason"}:
+        return _driving_message(ErrorCode.INVALID_END_REASON)
+
+    if error_type in DRIVING_SESSION_VALIDATION_MESSAGES:
+        return error_type, DRIVING_SESSION_VALIDATION_MESSAGES[error_type]
+
+    if error_type == "missing":
+        if "/end" in path:
+            return _driving_message(ErrorCode.INVALID_END_REASON)
+        return _driving_message(ErrorCode.INVALID_START_LOCATION)
+
+    if error_type == "extra_forbidden":
+        if "/end" in path:
+            return _driving_message(ErrorCode.INVALID_END_LOCATION)
+        return _driving_message(ErrorCode.INVALID_DESTINATION)
+
+    return None
+
+
 class ErrorResponse(ApiBaseModel):
     status: int
     message: str
@@ -179,7 +259,10 @@ async def validation_exception_handler(
     exc: RequestValidationError,
 ) -> JSONResponse:
     path = request.url.path
-    if "/search-histories" in path:
+    if "/driving-sessions" in path:
+        mapped_error = _driving_session_validation_error(exc.errors(), path)
+        log_label = "Driving session"
+    elif "/search-histories" in path:
         mapped_error = _query_validation_error(exc.errors())
         log_label = "Query"
     elif "/saved-places" in path or "/favorites" in path:

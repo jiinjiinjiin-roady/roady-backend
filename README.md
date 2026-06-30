@@ -37,6 +37,12 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Search History REST API:
   - `GET /api/v1/profiles/{profileId}/search-histories`
   - `DELETE /api/v1/profiles/{profileId}/search-histories`
+- Driving Session REST API:
+  - `POST /api/v1/driving-sessions`
+  - `GET /api/v1/driving-sessions/active`
+  - `GET /api/v1/driving-sessions/{sessionId}`
+  - `POST /api/v1/driving-sessions/{sessionId}/end`
+  - `GET /api/v1/profiles/{profileId}/driving-sessions`
 - Docker Compose stack for backend and MySQL
 - Ruff, pytest, compileall, OpenAPI, and smoke checks
 
@@ -45,7 +51,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Login, JWT, passwords, roles, or authority management
 - Account CRUD API
 - Search History creation REST API
-- Driving Session, Agent, Report, and Report Export APIs
+- Agent, Report, and Report Export APIs
 - WebSocket
 - ViT inference, Gemini calls, email delivery, report file generation, and risk policy services
 
@@ -103,6 +109,8 @@ If migration fails, seed and Uvicorn do not run. If seed fails, Uvicorn does not
 - Profile API: `http://localhost:8000/api/v1/profiles`
 - Saved Places API: `http://localhost:8000/api/v1/profiles/{profileId}/saved-places`
 - Search Histories API: `http://localhost:8000/api/v1/profiles/{profileId}/search-histories`
+- Driving Session API: `http://localhost:8000/api/v1/driving-sessions`
+- Driving Session History API: `http://localhost:8000/api/v1/profiles/{profileId}/driving-sessions`
 
 ## Profile API Example
 
@@ -183,6 +191,60 @@ Invoke-RestMethod `
 Search history creation REST API is not defined yet. The latest-50 retention
 policy is applied by the future writer that creates search history rows.
 
+## Driving Session API Example
+
+`POST /api/v1/driving-sessions` checks ViT model readiness through the existing
+health capability path. If `/app/artifacts/models/best_vit.pth` is absent, the
+start request returns `503 MODEL_NOT_AVAILABLE`.
+
+```powershell
+$startBody = @{
+    profileId = $profile.id
+    startLocation = @{
+        latitude = 37.5501
+        longitude = 127.0734
+    }
+    destination = @{
+        providerPlaceId = "smoke-destination-001"
+        name = "Smoke Destination"
+        latitude = 37.5510
+        longitude = 127.0737
+    }
+} | ConvertTo-Json -Depth 4
+
+$session = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/api/v1/driving-sessions" `
+    -ContentType "application/json" `
+    -Body $startBody
+
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://localhost:8000/api/v1/driving-sessions/active?profileId=$($profile.id)"
+
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://localhost:8000/api/v1/driving-sessions/$($session.id)"
+
+$endBody = @{
+    endReason = "USER_REQUEST"
+    endLocation = @{
+        latitude = 37.5602
+        longitude = 127.0811
+    }
+} | ConvertTo-Json -Depth 3
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/api/v1/driving-sessions/$($session.id)/end" `
+    -ContentType "application/json" `
+    -Body $endBody
+
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://localhost:8000/api/v1/profiles/$($profile.id)/driving-sessions?page=1&size=20"
+```
+
 ## Logs And Status
 
 ```bash
@@ -255,23 +317,26 @@ curl -i http://localhost:8000/docs
 curl -i http://localhost:8000/openapi.json
 ```
 
-Latest verified result on 2026-06-30:
+Latest verified result on 2026-07-01 KST / 2026-06-30 UTC:
 
 ```text
 ruff check . -> passed
-pytest -ra -> 146 passed
+pytest -ra -> 179 passed
 python -m compileall app -> passed
 Saved Place MySQL Integration -> passed
 Search History MySQL Integration -> passed
+Driving Session MySQL/API Integration -> passed
+Driving Session concurrent start Integration -> passed
 Concurrent fixed-place/favorite tests -> passed
-Current working tree OpenAPI import check -> passed
+PowerShell smoke -> MODEL_NOT_AVAILABLE path verified because vitModel is DOWN
+OpenAPI live check -> required 3-3A paths present
+Swagger /docs -> 200 OK
 Alembic current/head -> 0004_agent_report_tables
 ```
 
-During the 3-2 implementation run, Docker image build completed but backend
-container recreation failed with a Docker Desktop daemon `metadata.db`
-input/output error. The live `localhost:8000` container was therefore not
-replaced and PowerShell API smoke tests were not completed in that run.
+No Alembic revision was created for 3-3A, and the DB schema did not change.
+safetyScore is intentionally null until the future risk/safety score policy is
+implemented.
 
 ## Stop Containers
 
