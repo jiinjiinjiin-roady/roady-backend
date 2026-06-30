@@ -19,14 +19,23 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - agent conversations, agent messages, tool executions, and report exports
 - Default admin account seed command
 - `GET /api/v1/health`
+- MVP `current_account` dependency backed by `DEFAULT_ADMIN_ACCOUNT_ID`
+- `GET /api/v1/bootstrap`
+- Driver Profile REST API:
+  - `GET /api/v1/profiles`
+  - `POST /api/v1/profiles`
+  - `GET /api/v1/profiles/{profileId}`
+  - `PATCH /api/v1/profiles/{profileId}`
+  - `DELETE /api/v1/profiles/{profileId}`
+  - `POST /api/v1/profiles/{profileId}/select`
 - Docker Compose stack for backend and MySQL
-- Ruff, pytest, and compileall checks
+- Ruff, pytest, compileall, OpenAPI, and smoke checks
 
 ## Not Implemented Yet
 
 - Login, JWT, passwords, roles, or authority management
 - Account CRUD API
-- Bootstrap/Profile/Driving Session APIs
+- Saved Place, Search History, Driving Session, Agent, Report, and Report Export APIs
 - WebSocket
 - ViT inference, Gemini calls, email delivery, report file generation, and risk policy services
 
@@ -80,6 +89,34 @@ If migration fails, seed and Uvicorn do not run. If seed fails, Uvicorn does not
 - Swagger: `http://localhost:8000/docs`
 - OpenAPI: `http://localhost:8000/openapi.json`
 - Health API: `http://localhost:8000/api/v1/health`
+- Bootstrap API: `http://localhost:8000/api/v1/bootstrap`
+- Profile API: `http://localhost:8000/api/v1/profiles`
+
+## Profile API Example
+
+```powershell
+$body = @{
+    displayName = "Codex Smoke"
+    agentCallName = "Codex"
+    reportEmail = "codex-smoke@example.com"
+    agentPersonality = "FRIENDLY"
+    warningSensitivity = "MEDIUM"
+    ttsVoiceId = $null
+    ttsSpeed = 1.0
+    guidanceVolume = 70
+    theme = "SYSTEM"
+} | ConvertTo-Json
+
+$profile = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/api/v1/profiles" `
+    -ContentType "application/json" `
+    -Body $body
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/api/v1/profiles/$($profile.id)/select"
+```
 
 ## Logs And Status
 
@@ -144,11 +181,24 @@ The seed command:
 
 ```bash
 docker compose exec backend ruff check .
-docker compose exec backend pytest
+docker compose exec backend pytest -ra
 docker compose exec backend python -m compileall app
 curl -i http://localhost:8000/api/v1/health
+curl -i http://localhost:8000/api/v1/bootstrap
+curl -i http://localhost:8000/api/v1/profiles
 curl -i http://localhost:8000/docs
 curl -i http://localhost:8000/openapi.json
+```
+
+Latest verified result on 2026-06-30:
+
+```text
+ruff check . -> passed
+pytest -ra -> 113 passed
+python -m compileall app -> passed
+PowerShell smoke test -> passed
+OpenAPI path/schema check -> passed
+Alembic current/head -> 0004_agent_report_tables
 ```
 
 ## Stop Containers

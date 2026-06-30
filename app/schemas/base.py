@@ -12,3 +12,7 @@ class ApiBaseModel(BaseModel):
         populate_by_name=True,
         from_attributes=True,
     )
+
+
+class ApiRequestModel(ApiBaseModel):
+    model_config = ConfigDict(extra="forbid")
