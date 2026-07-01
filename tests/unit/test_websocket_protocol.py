@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 import pytest
 
 from app.realtime.protocol import (
+    FrameMetaMessage,
+    InvalidFrameMetaError,
     InvalidLocationUpdateError,
     ProtocolError,
     make_error_message,
@@ -109,6 +111,36 @@ def test_parse_location_update_message_validates_camel_case_and_normalizes_timez
     assert envelope.payload.source == "GPS"
 
 
+def test_parse_frame_meta_message_strictly_and_normalizes_timezone() -> None:
+    envelope = parse_client_text_message(
+        """
+        {
+          "type": "FRAME_META",
+          "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+          "occurredAt": "2026-06-28T12:10:10.210000+09:00",
+          "payload": {
+            "frameId": "frame-3024",
+            "format": "JPEG",
+            "width": 640,
+            "height": 360,
+            "capturedAt": "2026-06-28T12:10:10.200000+09:00"
+          }
+        }
+        """,
+        max_frame_width=640,
+        max_frame_height=360,
+    )
+
+    assert isinstance(envelope, FrameMetaMessage)
+    assert str(envelope.request_id) == "6a972e7b-2151-4997-acbd-19b01facb6b0"
+    assert envelope.occurred_at == datetime(2026, 6, 28, 3, 10, 10, 210000, tzinfo=UTC)
+    assert envelope.payload.frame_id == "frame-3024"
+    assert envelope.payload.format == "JPEG"
+    assert envelope.payload.width == 640
+    assert envelope.payload.height == 360
+    assert envelope.payload.captured_at == datetime(2026, 6, 28, 3, 10, 10, 200000, tzinfo=UTC)
+
+
 @pytest.mark.parametrize(
     "raw_message",
     [
@@ -208,3 +240,132 @@ def test_invalid_location_update_uses_recoverable_error_class(payload: dict[str,
 
     with pytest.raises(InvalidLocationUpdateError):
         parse_client_text_message(json.dumps(raw_message))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "jpeg",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "",
+                "format": "JPEG",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": " frame-3024",
+                "format": "JPEG",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": True,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": 641,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": 640,
+                "height": 361,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10",
+            },
+        },
+        {
+            "requestId": "not-a-uuid",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+            },
+        },
+        {
+            "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+            "occurredAt": "2026-06-28T03:10:10Z",
+            "payload": {
+                "frameId": "frame-3024",
+                "format": "JPEG",
+                "width": 640,
+                "height": 360,
+                "capturedAt": "2026-06-28T03:10:10Z",
+                "extra": True,
+            },
+        },
+    ],
+)
+def test_invalid_frame_meta_uses_recoverable_error_class(payload: dict[str, object]) -> None:
+    import json
+
+    raw_message = {"type": "FRAME_META", **payload}
+
+    with pytest.raises(InvalidFrameMetaError):
+        parse_client_text_message(
+            json.dumps(raw_message),
+            max_frame_width=640,
+            max_frame_height=360,
+        )

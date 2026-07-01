@@ -56,6 +56,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - `WS /ws/v1/driving-sessions/{sessionId}`
   - accept-before validation, SESSION_READY, PING/PONG heartbeat, duplicate replacement
   - `LOCATION_UPDATE` receive path, runtime location state, driving-state policy, and throttled `location_samples` persistence
+  - `FRAME_META` receive path with next-message binary JPEG pairing, recoverable frame errors, and bounded in-memory latest-frame queue
 - REST 3-6 integration, regression, and OpenAPI contract verification
 - Docker Compose stack for backend and MySQL
 - Ruff, pytest, compileall, OpenAPI, and smoke checks
@@ -66,8 +67,8 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Account CRUD API
 - Search History creation REST API
 - Agent messages, Gemini handling, ToolExecution handling, and Report Export APIs
-- WebSocket FRAME_META, binary JPEG, ViT inference, DETECTION_UPDATE, and Agent utterance handling
-- ViT inference, Gemini calls, email delivery, report file generation, and risk policy services
+- ViT inference, DETECTION_UPDATE, and Agent utterance handling
+- Gemini calls, email delivery, report file generation, and risk policy services
 
 The default admin account is only seed data for early development. It is not a
 login account, has no password, and must not be treated as production
@@ -349,6 +350,34 @@ speedKph >= DRIVING_MOVING_SPEED_THRESHOLD_KPH -> MOVING
 
 `PARKED` is not generated from LOCATION_UPDATE in this phase.
 
+Clients may send camera frames with `FRAME_META` followed immediately by binary
+JPEG bytes. Successful frame ingestion is silent and does not send ACK messages:
+
+```json
+{
+  "type": "FRAME_META",
+  "requestId": "6a972e7b-2151-4997-acbd-19b01facb6b0",
+  "occurredAt": "2026-06-28T03:10:10.210000Z",
+  "payload": {
+    "frameId": "frame-3024",
+    "format": "JPEG",
+    "width": 640,
+    "height": 360,
+    "capturedAt": "2026-06-28T03:10:10.200000Z"
+  }
+}
+```
+
+`FRAME_META` uses strict camelCase JSON validation. The next client message must
+be binary JPEG data. The server validates configured byte size and JPEG SOI/EOI
+markers, rejects duplicate accepted `frameId` values with a bounded recent-ID
+cache, and enqueues accepted bytes into a bounded latest-frame queue. When the
+queue is full, the oldest frame is dropped and the latest frame is kept. Frames
+are not written to DB, files, snapshots, logs, or Base64. Recoverable frame
+errors are `INVALID_FRAME_META`, `FRAME_BINARY_EXPECTED`,
+`FRAME_BINARY_TIMEOUT`, `ORPHAN_FRAME_BINARY`, `FRAME_TOO_LARGE`,
+`INVALID_JPEG_FRAME`, and `DUPLICATE_FRAME_ID`.
+
 Local development commonly has ViT DOWN because `/app/artifacts/models/best_vit.pth`
 is absent, so live successful `SESSION_READY` smoke may be unavailable. The
 success path is covered by the MySQL WebSocket integration tests with explicit
@@ -469,15 +498,15 @@ curl -i http://localhost:8000/docs
 curl -i http://localhost:8000/openapi.json
 ```
 
-Latest verified result on 2026-07-01 KST:
+Latest verified result on 2026-07-02 KST:
 
 ```text
 Docker Compose verification -> backend/mysql healthy with current working tree
 Docker host port override used for this verification: BACKEND_EXPOSED_PORT=8001, MYSQL_EXPOSED_PORT=3308
 docker compose exec backend ruff check . -> passed
 docker compose exec backend python -m compileall app -> passed
-docker compose exec backend pytest -ra -> 338 passed, 0 skipped, 1 warning
-4-2 targeted Docker pytest -> 76 passed, 0 skipped, 1 warning
+docker compose exec backend pytest -ra -> 372 passed, 0 skipped, 1 warning
+4-3A targeted Docker pytest -> 85 passed, 0 skipped, 1 warning
 MySQL-gated tests -> executed inside Docker Compose; no MYSQL_HOST/MYSQL_PASSWORD skip remains
 Live smoke -> health 200 DEGRADED with database UP, bootstrap 200, Swagger /docs 200, OpenAPI 200
 OpenAPI live check -> 27 REST method/path contracts present and WebSocket path absent from REST paths
@@ -521,8 +550,8 @@ No Alembic revision was created for 4-2, and the DB schema did not change.
 safetyScore is intentionally nullable until the future risk/safety score policy
 is implemented. The report read APIs aggregate stored data on request. Report
 Export, PDF rendering, file download, email sending, Agent message creation,
-Tool executions, Gemini handling, Demo APIs, FRAME_META, Binary
-JPEG, ViT inference, and WebSocket utterance handling remain future work.
+Tool executions, Gemini handling, Demo APIs, ViT inference, DETECTION_UPDATE,
+and WebSocket utterance handling remain future work.
 
 ## Stop Containers
 
@@ -565,6 +594,12 @@ Settings are loaded from environment variables and `.env`.
 - `WS_LOCATION_PERSIST_INTERVAL_MS`
 - `WS_HEARTBEAT_INTERVAL_MS`
 - `WS_HEARTBEAT_TIMEOUT_MS`
+- `WS_FRAME_BINARY_TIMEOUT_MS`
+- `WS_MAX_FRAME_BYTES`
+- `WS_FRAME_QUEUE_MAX_SIZE`
+- `WS_FRAME_RECENT_ID_CACHE_SIZE`
+- `WS_FRAME_MAX_WIDTH`
+- `WS_FRAME_MAX_HEIGHT`
 - `DRIVING_MOVING_SPEED_THRESHOLD_KPH`
 - `DRIVING_LOCATION_MAX_ACCURACY_METERS`
 - `GEMINI_API_KEY`

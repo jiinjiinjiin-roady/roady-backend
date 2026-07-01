@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     ws_location_persist_interval_ms: int = 5000
     ws_heartbeat_interval_ms: int = 10000
     ws_heartbeat_timeout_ms: int = 30000
+    ws_frame_binary_timeout_ms: int = 1000
+    ws_max_frame_bytes: int = 300 * 1024
+    ws_frame_queue_max_size: int = 2
+    ws_frame_recent_id_cache_size: int = 256
+    ws_frame_max_width: int = 1920
+    ws_frame_max_height: int = 1080
     driving_moving_speed_threshold_kph: float = 5.0
     driving_location_max_accuracy_meters: float = 100.0
     gemini_api_key: str = Field(default="", repr=False)
@@ -122,11 +128,31 @@ class Settings(BaseSettings):
         "ws_location_persist_interval_ms",
         "ws_heartbeat_interval_ms",
         "ws_heartbeat_timeout_ms",
+        "ws_frame_binary_timeout_ms",
     )
     @classmethod
     def validate_positive_websocket_setting(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("WebSocket timing settings must be positive.")
+        return value
+
+    @field_validator(
+        "ws_max_frame_bytes",
+        "ws_frame_recent_id_cache_size",
+        "ws_frame_max_width",
+        "ws_frame_max_height",
+    )
+    @classmethod
+    def validate_positive_frame_setting(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WebSocket frame settings must be positive.")
+        return value
+
+    @field_validator("ws_frame_queue_max_size")
+    @classmethod
+    def validate_frame_queue_max_size(cls, value: int) -> int:
+        if value not in {1, 2}:
+            raise ValueError("WS_FRAME_QUEUE_MAX_SIZE must be 1 or 2.")
         return value
 
     @field_validator("driving_moving_speed_threshold_kph")

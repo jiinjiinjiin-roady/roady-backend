@@ -4,10 +4,18 @@ import json
 import math
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, ValidationError, field_serializer, field_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+)
 
 from app.core.enums import LocationSource
 from app.core.time import ensure_utc_datetime, format_utc_datetime, utc_now_for_api_response
@@ -32,6 +40,7 @@ class ServerMessageType(StrEnum):
 class ClientMessageType(StrEnum):
     PONG = "PONG"
     LOCATION_UPDATE = "LOCATION_UPDATE"
+    FRAME_META = "FRAME_META"
 
 
 class ProtocolError(Exception):
@@ -39,6 +48,10 @@ class ProtocolError(Exception):
 
 
 class InvalidLocationUpdateError(ProtocolError):
+    pass
+
+
+class InvalidFrameMetaError(ProtocolError):
     pass
 
 
@@ -144,10 +157,56 @@ class LocationUpdateMessage(ClientEnvelope):
     payload: LocationUpdatePayload
 
 
-ClientMessage = PongMessage | LocationUpdateMessage
+class FrameMetaPayload(StrictApiModel):
+    frame_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    format: Literal["JPEG"]
+    width: StrictInt = Field(ge=1)
+    height: StrictInt = Field(ge=1)
+    captured_at: datetime
+
+    @field_validator("width")
+    @classmethod
+    def validate_max_width(cls, value: int, info: ValidationInfo) -> int:
+        max_width = int((info.context or {}).get("max_width", 1920))
+        if value > max_width:
+            raise ValueError("width exceeds configured maximum.")
+        return value
+
+    @field_validator("height")
+    @classmethod
+    def validate_max_height(cls, value: int, info: ValidationInfo) -> int:
+        max_height = int((info.context or {}).get("max_height", 1080))
+        if value > max_height:
+            raise ValueError("height exceeds configured maximum.")
+        return value
+
+    @field_validator("captured_at")
+    @classmethod
+    def validate_captured_at_is_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("capturedAt must include timezone information.")
+        return ensure_utc_datetime(value)
 
 
-def parse_client_text_message(raw_text: str) -> ClientMessage:
+class FrameMetaMessage(ClientEnvelope):
+    type: ClientMessageType = ClientMessageType.FRAME_META
+    request_id: UUID
+    payload: FrameMetaPayload
+
+
+ClientMessage = PongMessage | LocationUpdateMessage | FrameMetaMessage
+
+
+def parse_client_text_message(
+    raw_text: str,
+    *,
+    max_frame_width: int = 1920,
+    max_frame_height: int = 1080,
+) -> ClientMessage:
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
@@ -162,6 +221,15 @@ def parse_client_text_message(raw_text: str) -> ClientMessage:
             return LocationUpdateMessage.model_validate(payload)
         except ValidationError as exc:
             raise InvalidLocationUpdateError("Invalid LOCATION_UPDATE message.") from exc
+
+    if message_type == ClientMessageType.FRAME_META:
+        try:
+            return FrameMetaMessage.model_validate(
+                payload,
+                context={"max_width": max_frame_width, "max_height": max_frame_height},
+            )
+        except ValidationError as exc:
+            raise InvalidFrameMetaError("Invalid FRAME_META message.") from exc
 
     if message_type == ClientMessageType.PONG:
         try:

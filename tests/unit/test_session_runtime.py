@@ -5,6 +5,9 @@ import pytest
 
 from app.core.enums import DrivingState, LocationSource
 from app.realtime.session_runtime import (
+    AcceptedFrame,
+    FrameAcceptStatus,
+    FrameMetadata,
     LocationRuntimeApplyStatus,
     LocationRuntimeUpdate,
     SessionRuntimeRegistry,
@@ -180,3 +183,106 @@ async def test_concurrent_get_or_create_creates_one_runtime() -> None:
 
     assert len({id(runtime) for runtime in runtimes}) == 1
     assert registry.count == 1
+
+
+def accepted_frame(frame_id: str, captured_at: datetime | None = None) -> AcceptedFrame:
+    timestamp = captured_at or datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+    return AcceptedFrame(
+        metadata=FrameMetadata(
+            frame_id=frame_id,
+            request_id="6a972e7b-2151-4997-acbd-19b01facb6b0",
+            occurred_at=timestamp,
+            format="JPEG",
+            width=640,
+            height=360,
+            captured_at=timestamp,
+        ),
+        jpeg_bytes=b"\xff\xd8\xff\xd9",
+        received_at=timestamp,
+    )
+
+
+@pytest.mark.asyncio
+async def test_frame_queue_drops_oldest_and_keeps_latest_two() -> None:
+    registry = SessionRuntimeRegistry()
+    runtime = await registry.get_or_create("session-1", frame_queue_max_size=2)
+
+    first = await registry.accept_frame("session-1", accepted_frame("frame-1"))
+    second = await registry.accept_frame("session-1", accepted_frame("frame-2"))
+    third = await registry.accept_frame("session-1", accepted_frame("frame-3"))
+    frames = await registry.get_latest_frame_queue_snapshot("session-1")
+
+    assert first.status == FrameAcceptStatus.ACCEPTED
+    assert second.status == FrameAcceptStatus.ACCEPTED
+    assert third.status == FrameAcceptStatus.ACCEPTED
+    assert third.dropped_count == 1
+    assert [frame.metadata.frame_id for frame in frames] == ["frame-2", "frame-3"]
+    assert runtime.accepted_frame_count == 3
+    assert runtime.dropped_frame_count == 1
+    assert runtime.last_accepted_frame_id == "frame-3"
+
+
+@pytest.mark.asyncio
+async def test_frame_queue_max_size_one_keeps_only_latest() -> None:
+    registry = SessionRuntimeRegistry()
+    await registry.get_or_create("session-1", frame_queue_max_size=1)
+
+    await registry.accept_frame("session-1", accepted_frame("frame-1"))
+    result = await registry.accept_frame("session-1", accepted_frame("frame-2"))
+    frames = await registry.get_latest_frame_queue_snapshot("session-1")
+
+    assert result.dropped_count == 1
+    assert [frame.metadata.frame_id for frame in frames] == ["frame-2"]
+
+
+@pytest.mark.asyncio
+async def test_frame_recent_id_cache_is_bounded_and_eviction_allows_reuse() -> None:
+    registry = SessionRuntimeRegistry()
+    await registry.get_or_create("session-1", frame_recent_id_cache_size=2)
+
+    await registry.accept_frame("session-1", accepted_frame("frame-1"))
+    await registry.accept_frame("session-1", accepted_frame("frame-2"))
+    duplicate = await registry.accept_frame("session-1", accepted_frame("frame-1"))
+    await registry.accept_frame("session-1", accepted_frame("frame-3"))
+    evicted_reuse = await registry.accept_frame("session-1", accepted_frame("frame-1"))
+
+    assert duplicate.status == FrameAcceptStatus.DUPLICATE
+    assert evicted_reuse.status == FrameAcceptStatus.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_reset_frame_state_preserves_location_state() -> None:
+    registry = SessionRuntimeRegistry()
+    await registry.get_or_create("session-1")
+    occurred_at = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+    await registry.apply_location_update(
+        "session-1",
+        LocationRuntimeUpdate(
+            latitude=37.5501,
+            longitude=127.0734,
+            speed_kph=32.4,
+            accuracy_meters=8.2,
+            source=LocationSource.GPS,
+            driving_state=DrivingState.MOVING,
+            occurred_at=occurred_at,
+            received_at=occurred_at,
+        ),
+    )
+    await registry.accept_frame("session-1", accepted_frame("frame-1"))
+
+    reset = await registry.reset_frame_state(
+        "session-1",
+        frame_queue_max_size=2,
+        frame_recent_id_cache_size=256,
+    )
+    snapshot = await registry.get_location_snapshot("session-1")
+    frames = await registry.get_latest_frame_queue_snapshot("session-1")
+    runtime = await registry.get("session-1")
+
+    assert reset is True
+    assert snapshot is not None
+    assert snapshot.current_latitude == 37.5501
+    assert frames == ()
+    assert runtime is not None
+    assert runtime.accepted_frame_count == 0
+    assert runtime.last_accepted_frame_id is None

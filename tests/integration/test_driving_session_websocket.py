@@ -10,8 +10,9 @@ from sqlalchemy import delete, select
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
-from app.api.dependencies import get_current_account
+from app.api.dependencies import get_current_account, get_settings_dependency
 from app.api.v1.endpoints.driving_sessions import get_driver_monitoring_readiness
+from app.core.config import Settings
 from app.core.time import format_utc_datetime, utc_now_for_api_response, utc_now_for_mysql_datetime
 from app.db.session import AsyncSessionLocal
 from app.models import Account, DriverProfile, DrivingSession, LocationSample
@@ -153,6 +154,16 @@ async def list_location_samples(session_id: str) -> list[LocationSample]:
         return list(result.scalars().all())
 
 
+async def list_runtime_frame_ids(app, session_id: str) -> list[str]:
+    frames = await app.state.session_runtime_registry.get_latest_frame_queue_snapshot(session_id)
+    return [frame.metadata.frame_id for frame in frames]
+
+
+async def get_runtime_frame_bytes(app, session_id: str) -> list[bytes]:
+    frames = await app.state.session_runtime_registry.get_latest_frame_queue_snapshot(session_id)
+    return [frame.jpeg_bytes for frame in frames]
+
+
 async def complete_driving_session(session_id: str) -> None:
     async with AsyncSessionLocal() as session:
         driving_session = await session.get(DrivingSession, session_id)
@@ -172,6 +183,13 @@ def override_dependencies(app, account: Account, *, model_available: bool = True
 
     app.dependency_overrides[get_current_account] = current_account_override
     app.dependency_overrides[get_driver_monitoring_readiness] = readiness_override
+
+
+def override_settings(app, settings: Settings) -> None:
+    def settings_override() -> Settings:
+        return settings
+
+    app.dependency_overrides[get_settings_dependency] = settings_override
 
 
 def override_location_update_service(app, clock: FakeMonotonicClock) -> None:
@@ -230,6 +248,31 @@ def location_update_message(
             "source": "GPS",
         },
     }
+
+
+def frame_meta_message(
+    occurred_at: datetime,
+    *,
+    frame_id: str = "frame-1",
+    width: int = 640,
+    height: int = 360,
+) -> dict[str, object]:
+    return {
+        "type": "FRAME_META",
+        "requestId": str(uuid4()),
+        "occurredAt": format_utc_datetime(occurred_at),
+        "payload": {
+            "frameId": frame_id,
+            "format": "JPEG",
+            "width": width,
+            "height": height,
+            "capturedAt": format_utc_datetime(occurred_at),
+        },
+    }
+
+
+def minimal_jpeg() -> bytes:
+    return b"\xff\xd8\xff\xd9"
 
 
 def assert_denial(
@@ -362,7 +405,6 @@ def test_websocket_success_session_ready_pong_and_cleanup(app) -> None:
     [
         (lambda websocket: websocket.send_text("not-json"), "WEBSOCKET_PROTOCOL_ERROR"),
         (lambda websocket: websocket.send_json({"type": "UNKNOWN"}), "WEBSOCKET_PROTOCOL_ERROR"),
-        (lambda websocket: websocket.send_bytes(b"\xff\xd8\xff"), "WEBSOCKET_PROTOCOL_ERROR"),
     ],
 )
 def test_websocket_protocol_errors_close_with_policy_violation(
@@ -390,6 +432,262 @@ def test_websocket_protocol_errors_close_with_policy_violation(
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     websocket.receive_json()
                 assert exc_info.value.code == 1008
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_orphan_binary_is_recoverable(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_bytes(minimal_jpeg())
+                error_message = websocket.receive_json()
+
+                assert error_message["type"] == "ERROR"
+                assert error_message["payload"]["code"] == "ORPHAN_FRAME_BINARY"
+                assert error_message["payload"]["recoverable"] is True
+
+                websocket.send_json(frame_meta_message(base_time))
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-1"]
+                )
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_frame_meta_binary_pair_enqueues_without_ack_or_db_write(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                websocket.send_bytes(minimal_jpeg())
+
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-1"]
+                )
+                assert client.portal.call(get_runtime_frame_bytes, app, data.active_session_id) == [
+                    minimal_jpeg()
+                ]
+                assert len(client.portal.call(list_location_samples, data.active_session_id)) == 0
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_frame_queue_backpressure_drops_oldest(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                for index in range(1, 4):
+                    websocket.send_json(
+                        frame_meta_message(
+                            base_time + timedelta(milliseconds=index),
+                            frame_id=f"frame-{index}",
+                        )
+                    )
+                    websocket.send_bytes(minimal_jpeg())
+
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-2", "frame-3"]
+                )
+                runtime = app.state.session_runtime_registry._runtimes[data.active_session_id]
+                assert runtime.accepted_frame_count == 3
+                assert runtime.dropped_frame_count == 1
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_invalid_frame_meta_is_recoverable(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, width=0))
+                error_message = websocket.receive_json()
+                assert error_message["type"] == "ERROR"
+                assert error_message["payload"]["code"] == "INVALID_FRAME_META"
+                assert error_message["payload"]["recoverable"] is True
+
+                websocket.send_json(frame_meta_message(base_time + timedelta(seconds=1)))
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-1"]
+                )
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_invalid_jpeg_and_too_large_are_recoverable(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        override_settings(app, Settings(ws_max_frame_bytes=4))
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                websocket.send_bytes(b"\xff\xd8\x00\x00")
+                invalid = websocket.receive_json()
+                assert invalid["payload"]["code"] == "INVALID_JPEG_FRAME"
+                assert invalid["payload"]["recoverable"] is True
+
+                websocket.send_json(
+                    frame_meta_message(base_time + timedelta(seconds=1), frame_id="frame-1")
+                )
+                websocket.send_bytes(b"\xff\xd8\x00\x00\xff\xd9")
+                too_large = websocket.receive_json()
+                assert too_large["payload"]["code"] == "FRAME_TOO_LARGE"
+                assert too_large["payload"]["recoverable"] is True
+
+                websocket.send_json(
+                    frame_meta_message(base_time + timedelta(seconds=2), frame_id="frame-1")
+                )
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-1"]
+                )
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_duplicate_frame_id_is_recoverable(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-1"]
+                )
+
+                websocket.send_json(
+                    frame_meta_message(base_time + timedelta(seconds=1), frame_id="frame-1")
+                )
+                websocket.send_bytes(minimal_jpeg())
+                duplicate = websocket.receive_json()
+                assert duplicate["payload"]["code"] == "DUPLICATE_FRAME_ID"
+                assert duplicate["payload"]["recoverable"] is True
+                assert client.portal.call(list_runtime_frame_ids, app, data.active_session_id) == [
+                    "frame-1"
+                ]
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_frame_binary_timeout_is_recoverable(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        override_settings(app, Settings(ws_frame_binary_timeout_ms=1))
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                timeout = websocket.receive_json()
+                assert timeout["payload"]["code"] == "FRAME_BINARY_TIMEOUT"
+                assert timeout["payload"]["recoverable"] is True
+
+                websocket.send_json(
+                    frame_meta_message(base_time + timedelta(seconds=1), frame_id="frame-2")
+                )
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-2"]
+                )
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_pending_frame_then_location_update_sends_expected_and_processes_location(
+    app,
+) -> None:
+    clock = FakeMonotonicClock()
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        override_location_update_service(app, clock)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                websocket.send_json(location_update_message(base_time + timedelta(seconds=1)))
+                error_message = websocket.receive_json()
+                assert error_message["payload"]["code"] == "FRAME_BINARY_EXPECTED"
+                assert error_message["payload"]["recoverable"] is True
+                wait_for_condition(
+                    lambda: len(client.portal.call(list_location_samples, data.active_session_id))
+                    == 1
+                )
+                assert client.portal.call(list_runtime_frame_ids, app, data.active_session_id) == []
         finally:
             app.dependency_overrides.clear()
             client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
@@ -610,12 +908,19 @@ def test_websocket_duplicate_connection_replaces_previous_connection(app) -> Non
     with TestClient(app) as client:
         data = client.portal.call(create_test_data)
         override_dependencies(app, data.current_account)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
 
         try:
             with client.websocket_connect(
                 f"/ws/v1/driving-sessions/{data.active_session_id}"
             ) as first:
                 assert first.receive_json()["type"] == "SESSION_READY"
+                first.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                first.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
+                    == ["frame-1"]
+                )
 
                 with client.websocket_connect(
                     f"/ws/v1/driving-sessions/{data.active_session_id}"
@@ -630,6 +935,24 @@ def test_websocket_duplicate_connection_replaces_previous_connection(app) -> Non
                     assert exc_info.value.code == 4001
                     assert app.state.websocket_connection_manager.active_count == 1
                     assert app.state.session_runtime_registry.count == 1
+                    assert client.portal.call(
+                        list_runtime_frame_ids,
+                        app,
+                        data.active_session_id,
+                    ) == []
+
+                    second.send_json(
+                        frame_meta_message(base_time + timedelta(seconds=1), frame_id="frame-1")
+                    )
+                    second.send_bytes(minimal_jpeg())
+                    wait_for_condition(
+                        lambda: client.portal.call(
+                            list_runtime_frame_ids,
+                            app,
+                            data.active_session_id,
+                        )
+                        == ["frame-1"]
+                    )
 
                 wait_for_condition(lambda: app.state.websocket_connection_manager.active_count == 0)
                 wait_for_condition(lambda: app.state.session_runtime_registry.count == 0)

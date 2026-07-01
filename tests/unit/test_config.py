@@ -64,6 +64,12 @@ def test_settings_exposes_default_websocket_runtime_settings() -> None:
     assert settings.ws_location_persist_interval_ms == 5000
     assert settings.ws_heartbeat_interval_ms == 10000
     assert settings.ws_heartbeat_timeout_ms == 30000
+    assert settings.ws_frame_binary_timeout_ms == 1000
+    assert settings.ws_max_frame_bytes == 307200
+    assert settings.ws_frame_queue_max_size == 2
+    assert settings.ws_frame_recent_id_cache_size == 256
+    assert settings.ws_frame_max_width == 1920
+    assert settings.ws_frame_max_height == 1080
     assert settings.driving_moving_speed_threshold_kph == 5.0
     assert settings.driving_location_max_accuracy_meters == 100.0
 
@@ -77,6 +83,26 @@ def test_settings_rejects_non_positive_websocket_runtime_settings() -> None:
 
     with pytest.raises(ValidationError):
         Settings(ws_location_persist_interval_ms=0)
+
+    with pytest.raises(ValidationError):
+        Settings(ws_frame_binary_timeout_ms=0)
+
+
+def test_settings_rejects_invalid_websocket_frame_settings() -> None:
+    with pytest.raises(ValidationError):
+        Settings(ws_max_frame_bytes=0)
+
+    with pytest.raises(ValidationError):
+        Settings(ws_frame_queue_max_size=3)
+
+    with pytest.raises(ValidationError):
+        Settings(ws_frame_recent_id_cache_size=0)
+
+    with pytest.raises(ValidationError):
+        Settings(ws_frame_max_width=0)
+
+    with pytest.raises(ValidationError):
+        Settings(ws_frame_max_height=0)
 
 
 def test_settings_rejects_invalid_driving_context_thresholds() -> None:

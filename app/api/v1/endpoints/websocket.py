@@ -20,8 +20,12 @@ from app.integrations.driver_monitoring import DriverMonitoringReadiness
 from app.models import Account
 from app.policies.driving_context_policy import DrivingContextPolicy
 from app.realtime.connection_manager import ConnectionManager, ManagedConnection
+from app.realtime.frame_handler import FrameIngressService, FrameIngressStatus
+from app.realtime.frame_pairing import FramePairingController
 from app.realtime.heartbeat import HeartbeatController
 from app.realtime.protocol import (
+    FrameMetaMessage,
+    InvalidFrameMetaError,
     InvalidLocationUpdateError,
     LocationUpdateMessage,
     ProtocolError,
@@ -57,6 +61,13 @@ INVALID_LOCATION_UPDATE_MESSAGE = "Location update payload is invalid."
 STALE_LOCATION_UPDATE_MESSAGE = "Older location update was ignored."
 LOCATION_PERSIST_FAILED_MESSAGE = "Location update could not be persisted."
 SESSION_NOT_ACTIVE_MESSAGE = "Driving session is no longer active."
+INVALID_FRAME_META_MESSAGE = "Frame metadata payload is invalid."
+FRAME_BINARY_EXPECTED_MESSAGE = "FRAME_META must be followed by JPEG binary data."
+FRAME_BINARY_TIMEOUT_MESSAGE = "Frame binary data was not received before timeout."
+ORPHAN_FRAME_BINARY_MESSAGE = "Frame binary data was received without frame metadata."
+FRAME_TOO_LARGE_MESSAGE = "Frame binary data exceeds the configured maximum size."
+INVALID_JPEG_FRAME_MESSAGE = "Frame binary data is not a valid JPEG frame."
+DUPLICATE_FRAME_ID_MESSAGE = "Frame ID has already been accepted."
 
 
 @router.websocket("/driving-sessions/{sessionId}")
@@ -92,7 +103,36 @@ async def connect_driving_session_websocket(
 
     previous = await connection_manager.register(parsed_session_id, websocket)
     await _close_replaced_connection(previous)
-    await runtime_registry.get_or_create(parsed_session_id)
+    await runtime_registry.get_or_create(
+        parsed_session_id,
+        frame_queue_max_size=settings.ws_frame_queue_max_size,
+        frame_recent_id_cache_size=settings.ws_frame_recent_id_cache_size,
+    )
+    await runtime_registry.reset_frame_state(
+        parsed_session_id,
+        frame_queue_max_size=settings.ws_frame_queue_max_size,
+        frame_recent_id_cache_size=settings.ws_frame_recent_id_cache_size,
+    )
+
+    frame_ingress_service = FrameIngressService(
+        connection_manager=connection_manager,
+        runtime_registry=runtime_registry,
+        max_frame_bytes=settings.ws_max_frame_bytes,
+    )
+
+    async def send_frame_timeout_error(_: FrameMetaMessage) -> None:
+        await _send_frame_error(
+            websocket=websocket,
+            session_id=parsed_session_id,
+            connection_manager=connection_manager,
+            code=ErrorCode.FRAME_BINARY_TIMEOUT,
+            message=FRAME_BINARY_TIMEOUT_MESSAGE,
+        )
+
+    frame_pairing = FramePairingController(
+        timeout_seconds=settings.ws_frame_binary_timeout_ms / 1000,
+        on_timeout=send_frame_timeout_error,
+    )
 
     try:
         await connection_manager.send_json_to_current(
@@ -125,6 +165,9 @@ async def connect_driving_session_websocket(
             connection_manager=connection_manager,
             runtime_registry=runtime_registry,
             location_update_service=location_update_service,
+            frame_pairing=frame_pairing,
+            frame_ingress_service=frame_ingress_service,
+            settings=settings,
         )
     except WebSocketDisconnect:
         pass
@@ -136,6 +179,8 @@ async def connect_driving_session_websocket(
             connection_manager=connection_manager,
         )
     finally:
+        await frame_pairing.close()
+
         if heartbeat is not None:
             await heartbeat.stop()
 
@@ -176,6 +221,9 @@ async def _receive_loop(
     connection_manager: ConnectionManager,
     runtime_registry: SessionRuntimeRegistry,
     location_update_service: LocationUpdateService,
+    frame_pairing: FramePairingController,
+    frame_ingress_service: FrameIngressService,
+    settings: Settings,
 ) -> None:
     while True:
         message = await websocket.receive()
@@ -183,12 +231,26 @@ async def _receive_loop(
             return
 
         if message.get("bytes") is not None:
-            await _send_protocol_error_and_close(
+            frame_meta = await frame_pairing.claim_binary()
+            if frame_meta is None:
+                await _send_frame_error(
+                    websocket=websocket,
+                    session_id=session_id,
+                    connection_manager=connection_manager,
+                    code=ErrorCode.ORPHAN_FRAME_BINARY,
+                    message=ORPHAN_FRAME_BINARY_MESSAGE,
+                )
+                continue
+
+            await _handle_frame_binary(
                 websocket=websocket,
                 session_id=session_id,
                 connection_manager=connection_manager,
+                frame_ingress_service=frame_ingress_service,
+                frame_meta=frame_meta,
+                frame_bytes=message["bytes"],
             )
-            return
+            continue
 
         text = message.get("text")
         if text is None:
@@ -200,8 +262,13 @@ async def _receive_loop(
             return
 
         try:
-            envelope = parse_client_text_message(text)
+            envelope = parse_client_text_message(
+                text,
+                max_frame_width=settings.ws_frame_max_width,
+                max_frame_height=settings.ws_frame_max_height,
+            )
         except InvalidLocationUpdateError:
+            await frame_pairing.drop_pending()
             await _send_location_error(
                 websocket=websocket,
                 session_id=session_id,
@@ -211,7 +278,18 @@ async def _receive_loop(
                 recoverable=True,
             )
             continue
+        except InvalidFrameMetaError:
+            await frame_pairing.drop_pending()
+            await _send_frame_error(
+                websocket=websocket,
+                session_id=session_id,
+                connection_manager=connection_manager,
+                code=ErrorCode.INVALID_FRAME_META,
+                message=INVALID_FRAME_META_MESSAGE,
+            )
+            continue
         except ProtocolError:
+            await frame_pairing.drop_pending()
             await _send_protocol_error_and_close(
                 websocket=websocket,
                 session_id=session_id,
@@ -219,10 +297,25 @@ async def _receive_loop(
             )
             return
 
+        if await frame_pairing.has_pending():
+            await frame_pairing.drop_pending()
+            await _send_frame_error(
+                websocket=websocket,
+                session_id=session_id,
+                connection_manager=connection_manager,
+                code=ErrorCode.FRAME_BINARY_EXPECTED,
+                message=FRAME_BINARY_EXPECTED_MESSAGE,
+            )
+
         now = utc_now_for_api_response()
         if envelope.type == "PONG":
             await runtime_registry.touch_message(session_id, now)
             await runtime_registry.touch_heartbeat(session_id, now)
+            continue
+
+        if isinstance(envelope, FrameMetaMessage):
+            await runtime_registry.touch_message(session_id, now)
+            await frame_pairing.replace_pending(envelope)
             continue
 
         if isinstance(envelope, LocationUpdateMessage):
@@ -284,6 +377,63 @@ async def _receive_loop(
         return
 
 
+async def _handle_frame_binary(
+    *,
+    websocket: WebSocket,
+    session_id: str,
+    connection_manager: ConnectionManager,
+    frame_ingress_service: FrameIngressService,
+    frame_meta: FrameMetaMessage,
+    frame_bytes: bytes,
+) -> None:
+    result = await frame_ingress_service.handle(
+        session_id=session_id,
+        websocket=websocket,
+        message=frame_meta,
+        frame_bytes=frame_bytes,
+        received_at=utc_now_for_api_response(),
+    )
+    if result.status == FrameIngressStatus.ACCEPTED:
+        return
+
+    if result.status == FrameIngressStatus.TOO_LARGE:
+        await _send_frame_error(
+            websocket=websocket,
+            session_id=session_id,
+            connection_manager=connection_manager,
+            code=ErrorCode.FRAME_TOO_LARGE,
+            message=FRAME_TOO_LARGE_MESSAGE,
+        )
+        return
+
+    if result.status == FrameIngressStatus.INVALID_JPEG:
+        await _send_frame_error(
+            websocket=websocket,
+            session_id=session_id,
+            connection_manager=connection_manager,
+            code=ErrorCode.INVALID_JPEG_FRAME,
+            message=INVALID_JPEG_FRAME_MESSAGE,
+        )
+        return
+
+    if result.status == FrameIngressStatus.DUPLICATE:
+        await _send_frame_error(
+            websocket=websocket,
+            session_id=session_id,
+            connection_manager=connection_manager,
+            code=ErrorCode.DUPLICATE_FRAME_ID,
+            message=DUPLICATE_FRAME_ID_MESSAGE,
+        )
+        return
+
+    if result.status == FrameIngressStatus.RUNTIME_NOT_FOUND:
+        await _send_internal_error_and_close(
+            websocket=websocket,
+            session_id=session_id,
+            connection_manager=connection_manager,
+        )
+
+
 async def _send_protocol_error_and_close(
     *,
     websocket: WebSocket,
@@ -321,6 +471,25 @@ async def _send_location_error(
             code=code.value,
             message=message,
             recoverable=recoverable,
+        ),
+    )
+
+
+async def _send_frame_error(
+    *,
+    websocket: WebSocket,
+    session_id: str,
+    connection_manager: ConnectionManager,
+    code: ErrorCode,
+    message: str,
+) -> None:
+    await connection_manager.send_json_to_current(
+        session_id,
+        websocket,
+        make_error_message(
+            code=code.value,
+            message=message,
+            recoverable=True,
         ),
     )
 
