@@ -1,0 +1,84 @@
+services:
+  mysql:
+    image: mysql:8.4
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    env_file:
+      - .env
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u\"$${MYSQL_USER}\" -p\"$${MYSQL_PASSWORD}\" --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - backend-net
+
+  backend:
+    image: ${BACKEND_IMAGE:?set BACKEND_IMAGE}:${BACKEND_IMAGE_TAG:?set BACKEND_IMAGE_TAG}
+    command:
+      [
+        "sh",
+        "-c",
+        "python -m app.db.seed && exec uvicorn app.main:app --host 0.0.0.0 --port 8000",
+      ]
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-staging}
+      PYTHONPATH: /app
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      REPORT_STORAGE_PATH: /app/storage/reports
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - backend-storage:/app/storage
+      - backend-artifacts:/app/artifacts:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - backend-net
+
+networks:
+  backend-net:
+
+volumes:
+  mysql-data:
+  backend-storage:
+  backend-artifacts:

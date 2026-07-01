@@ -62,6 +62,40 @@ async def test_response_reuses_provided_request_id(client) -> None:
     assert response.headers["X-Request-ID"] == request_id
 
 
+async def test_cors_preflight_allows_configured_origin(client) -> None:
+    origin = "http://localhost:5173"
+
+    response = await client.options(
+        "/api/v1/health",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "Content-Type,X-Request-ID",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "access-control-allow-credentials" not in response.headers
+
+
+async def test_cors_disallowed_origin_keeps_rest_response_without_cors_header(client) -> None:
+    response = await client.get(
+        "/openapi.json",
+        headers={"Origin": "https://not-allowed.example.com"},
+    )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_websocket_route_is_registered_outside_openapi(app) -> None:
+    route_paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert "/ws/v1/driving-sessions/{sessionId}" in route_paths
+    assert "/ws/v1/driving-sessions/{sessionId}" not in app.openapi()["paths"]
+
+
 async def test_health_returns_200_with_database_up(app, client) -> None:
     app.dependency_overrides[get_health_service] = get_test_health_service
 

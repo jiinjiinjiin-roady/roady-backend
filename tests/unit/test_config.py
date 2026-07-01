@@ -24,6 +24,19 @@ def test_settings_exposes_parsed_cors_origins() -> None:
     assert settings.cors_origin_list == ["http://localhost:5173", "https://example.com"]
 
 
+def test_parse_cors_origins_trims_empty_and_duplicate_values() -> None:
+    assert parse_cors_origins(" http://localhost:5173, ,http://localhost:5173 ") == [
+        "http://localhost:5173",
+    ]
+
+
+def test_settings_uses_database_url_override_when_configured() -> None:
+    database_url = "mysql+asyncmy://custom:secret@mysql:3306/custom"
+    settings = Settings(database_url_override=database_url)
+
+    assert settings.database_url == database_url
+
+
 def test_settings_validates_default_admin_account_id() -> None:
     settings = Settings(
         default_admin_account_id="00000000-0000-0000-0000-000000000001",

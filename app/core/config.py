@@ -5,7 +5,7 @@ from typing import Self
 from urllib.parse import quote_plus
 from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     mysql_password: str = Field(default="", repr=False)
     mysql_root_password: str = Field(default="", repr=False)
     mysql_exposed_port: int = 3306
+    database_url_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL", "database_url_override"),
+        repr=False,
+    )
     db_pool_recycle_seconds: int = 1800
     default_admin_account_id: str = "00000000-0000-0000-0000-000000000001"
     default_admin_email: str | None = "admin@example.com"
@@ -128,6 +133,9 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        if self.database_url_override and self.database_url_override.strip():
+            return self.database_url_override.strip()
+
         user = quote_plus(self.mysql_user)
         password = quote_plus(self.mysql_password)
         database = quote_plus(self.mysql_database)
