@@ -1,1 +1,1 @@
-"""Realtime package placeholder."""
+"""Realtime WebSocket runtime support."""

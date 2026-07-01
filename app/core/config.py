@@ -1,10 +1,11 @@
 import json
 from collections.abc import Iterable
 from functools import lru_cache
+from typing import Self
 from urllib.parse import quote_plus
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
     model_path: str = "/app/artifacts/models/best_vit.pth"
     model_version: str = "vit-dms-1.0.0"
     policy_version: str = "risk-policy-1.0.0"
+    ws_recommended_frame_fps: int = 5
+    ws_location_interval_ms: int = 1000
+    ws_heartbeat_interval_ms: int = 10000
+    ws_heartbeat_timeout_ms: int = 30000
     gemini_api_key: str = Field(default="", repr=False)
     gemini_model: str = ""
     email_provider: str = ""
@@ -102,6 +107,24 @@ class Settings(BaseSettings):
             return None
         email = str(value).strip()
         return email or None
+
+    @field_validator(
+        "ws_recommended_frame_fps",
+        "ws_location_interval_ms",
+        "ws_heartbeat_interval_ms",
+        "ws_heartbeat_timeout_ms",
+    )
+    @classmethod
+    def validate_positive_websocket_setting(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WebSocket timing settings must be positive.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_websocket_heartbeat_timeout(self) -> Self:
+        if self.ws_heartbeat_timeout_ms <= self.ws_heartbeat_interval_ms:
+            raise ValueError("WS_HEARTBEAT_TIMEOUT_MS must be greater than interval.")
+        return self
 
     @property
     def database_url(self) -> str:

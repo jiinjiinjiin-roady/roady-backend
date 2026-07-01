@@ -52,6 +52,9 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - `GET /api/v1/profiles/{profileId}/reports/summary`
   - `GET /api/v1/profiles/{profileId}/reports/behavior-events`
   - `GET /api/v1/profiles/{profileId}/reports/sessions`
+- Driving Session WebSocket connection foundation:
+  - `WS /ws/v1/driving-sessions/{sessionId}`
+  - accept-before validation, SESSION_READY, PING/PONG heartbeat, duplicate replacement
 - REST 3-6 integration, regression, and OpenAPI contract verification
 - Docker Compose stack for backend and MySQL
 - Ruff, pytest, compileall, OpenAPI, and smoke checks
@@ -62,7 +65,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Account CRUD API
 - Search History creation REST API
 - Agent messages, Gemini handling, ToolExecution handling, and Report Export APIs
-- WebSocket
+- WebSocket LOCATION_UPDATE, FRAME_META, binary JPEG, ViT inference, and Agent utterance handling
 - ViT inference, Gemini calls, email delivery, report file generation, and risk policy services
 
 The default admin account is only seed data for early development. It is not a
@@ -126,6 +129,7 @@ If migration fails, seed and Uvicorn do not run. If seed fails, Uvicorn does not
 - Report Summary API: `http://localhost:8000/api/v1/profiles/{profileId}/reports/summary`
 - Report Behavior API: `http://localhost:8000/api/v1/profiles/{profileId}/reports/behavior-events`
 - Report Sessions API: `http://localhost:8000/api/v1/profiles/{profileId}/reports/sessions`
+- Driving Session WebSocket: `ws://localhost:8000/ws/v1/driving-sessions/{sessionId}`
 
 ## Profile API Example
 
@@ -268,6 +272,47 @@ Invoke-RestMethod `
     -Uri "http://localhost:8000/api/v1/profiles/$($profile.id)/driving-sessions?page=1&size=20"
 ```
 
+## Driving Session WebSocket
+
+`WS /ws/v1/driving-sessions/{sessionId}` accepts only owned ACTIVE sessions and
+checks ViT readiness before `accept()`. Handshake failures return the common JSON
+error shape as HTTP denial responses:
+
+```text
+422 INVALID_SESSION_ID
+404 SESSION_NOT_FOUND
+409 SESSION_NOT_ACTIVE
+503 MODEL_NOT_AVAILABLE
+```
+
+The first successful server message is `SESSION_READY`:
+
+```json
+{
+  "type": "SESSION_READY",
+  "occurredAt": "2026-06-28T03:10:00.000000Z",
+  "payload": {
+    "sessionId": "67371b45-204c-4d87-b8f7-8a334229a41e",
+    "modelVersion": "vit-dms-1.0.0",
+    "policyVersion": "risk-policy-1.0.0",
+    "recommendedFrameFps": 5,
+    "locationIntervalMs": 1000,
+    "heartbeatIntervalMs": 10000
+  }
+}
+```
+
+Server PING and client PONG are JSON application messages. The default heartbeat
+interval is 10 seconds and timeout is 30 seconds; timeout closes with `4008`.
+A second WebSocket for the same session replaces the first and closes the old
+connection with `4001`. WebSocket disconnect does not end the DrivingSession;
+use `POST /api/v1/driving-sessions/{sessionId}/end` for that.
+
+Local development commonly has ViT DOWN because `/app/artifacts/models/best_vit.pth`
+is absent, so live successful `SESSION_READY` smoke may be unavailable. The
+success path is covered by the MySQL WebSocket integration tests with explicit
+fake readiness.
+
 ## Agent Conversation API Example
 
 This endpoint starts a new general Agent conversation container for an existing
@@ -383,12 +428,12 @@ curl -i http://localhost:8000/docs
 curl -i http://localhost:8000/openapi.json
 ```
 
-Latest verified result on 2026-07-01 KST / 2026-06-30 UTC:
+Latest verified result on 2026-07-01 KST:
 
 ```text
 docker compose up --build -d -> backend/mysql healthy
 ruff check . -> passed
-pytest -ra -> 272 passed
+pytest -ra -> 303 passed, 1 warning
 python -m compileall app -> passed
 OpenAPI Contract Test -> passed
 REST E2E Integration -> passed
@@ -402,6 +447,11 @@ Agent Conversation Detail MySQL/API Integration -> passed
 Agent Conversation Detail N+1 guard -> 2 fixed SELECT statements
 Agent Conversation POST -> GET messages=[] flow -> passed
 Report Summary/Behavior/Sessions MySQL Integration -> passed
+WebSocket Protocol Unit -> passed
+ConnectionManager Unit -> passed
+SessionRuntime Unit -> passed
+Heartbeat Unit -> passed
+Driving Session WebSocket MySQL Integration -> passed
 Report Period Unit -> passed
 Report Sessions N+1 guard -> 2 fixed report-table SELECT statements
 REST 3-6 ownership isolation regression -> passed
@@ -411,17 +461,21 @@ Session end conversation-abort regression -> passed
 Concurrent fixed-place/favorite tests -> passed
 PowerShell smoke -> health DEGRADED with database UP and vitModel/Gemini/email DOWN
 PowerShell smoke -> bootstrap and profiles returned 200
+Live WebSocket smoke -> invalid sessionId returned HTTP 422 INVALID_SESSION_ID JSON denial
+Live WebSocket smoke -> random missing session returned HTTP 404 SESSION_NOT_FOUND JSON denial
+Live SESSION_READY smoke -> skipped because local ViT model is DOWN and no prepared live ACTIVE session was created
 OpenAPI live check -> current 27 REST method/path contracts present
+OpenAPI live check -> /ws/v1/driving-sessions/{sessionId} absent from REST paths
 Swagger /docs -> 200 OK
 Alembic current/head -> 0004_agent_report_tables
 ```
 
-No Alembic revision was created for 3-6, and the DB schema did not change.
+No Alembic revision was created for 4-1, and the DB schema did not change.
 safetyScore is intentionally nullable until the future risk/safety score policy
 is implemented. The report read APIs aggregate stored data on request. Report
 Export, PDF rendering, file download, email sending, Agent message creation,
-Tool executions, Gemini handling, Demo APIs, and WebSocket utterance handling
-remain future work.
+Tool executions, Gemini handling, Demo APIs, LOCATION_UPDATE, FRAME_META, Binary
+JPEG, ViT inference, and WebSocket utterance handling remain future work.
 
 ## Stop Containers
 
@@ -459,6 +513,10 @@ Settings are loaded from environment variables and `.env`.
 - `MODEL_PATH`
 - `MODEL_VERSION`
 - `POLICY_VERSION`
+- `WS_RECOMMENDED_FRAME_FPS`
+- `WS_LOCATION_INTERVAL_MS`
+- `WS_HEARTBEAT_INTERVAL_MS`
+- `WS_HEARTBEAT_TIMEOUT_MS`
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL`
 - `EMAIL_PROVIDER`

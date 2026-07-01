@@ -82,6 +82,7 @@ def test_openapi_exposes_only_current_rest_operation_matrix() -> None:
     assert not (actual_operations & FORBIDDEN_REST_OPERATIONS)
     assert all(path.startswith("/api/v1/") for _, path in actual_operations)
     assert all(not path.startswith("/api/v1/api/v1/") for _, path in actual_operations)
+    assert "/ws/v1/driving-sessions/{sessionId}" not in spec["paths"]
     assert all("/demo/" not in path for _, path in actual_operations)
     assert all("/report-exports" not in path for _, path in actual_operations)
     assert all("confirm" not in path and "reject" not in path for _, path in actual_operations)

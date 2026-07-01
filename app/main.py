@@ -6,10 +6,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.error_handlers import register_error_handlers
+from app.api.v1.endpoints.websocket import router as websocket_router
 from app.api.v1.router import router as api_v1_router
 from app.core.config import get_settings
 from app.core.logging import RequestIdMiddleware, configure_logging
 from app.db.session import dispose_engine
+from app.realtime.connection_manager import ConnectionManager
+from app.realtime.protocol import WebSocketCloseCode
+from app.realtime.session_runtime import SessionRuntimeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +22,25 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
+    configure_realtime_state(app)
     logger.info("%s starting", settings.app_name)
     try:
         yield
     finally:
+        await app.state.websocket_connection_manager.close_all(
+            code=WebSocketCloseCode.SERVICE_RESTART,
+            reason="SERVICE_RESTART",
+        )
+        await app.state.session_runtime_registry.clear()
         await dispose_engine()
         logger.info("%s stopping", settings.app_name)
+
+
+def configure_realtime_state(app: FastAPI) -> None:
+    if not hasattr(app.state, "websocket_connection_manager"):
+        app.state.websocket_connection_manager = ConnectionManager()
+    if not hasattr(app.state, "session_runtime_registry"):
+        app.state.session_runtime_registry = SessionRuntimeRegistry()
 
 
 def create_app() -> FastAPI:
@@ -43,8 +60,10 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestIdMiddleware)
 
+    configure_realtime_state(app)
     register_error_handlers(app)
     app.include_router(api_v1_router, prefix=settings.api_v1_prefix)
+    app.include_router(websocket_router, prefix=settings.ws_v1_prefix)
 
     return app
 

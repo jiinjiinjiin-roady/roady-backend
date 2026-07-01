@@ -33,10 +33,7 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 AppSettings = Annotated[Settings, Depends(get_settings_dependency)]
 
 
-async def get_current_account(
-    session: DbSession,
-    settings: AppSettings,
-) -> Account:
+async def load_current_account(session: AsyncSession, settings: Settings) -> Account:
     repository = AccountRepository(session)
 
     try:
@@ -61,6 +58,13 @@ async def get_current_account(
         )
 
     return account
+
+
+async def get_current_account(
+    session: DbSession,
+    settings: AppSettings,
+) -> Account:
+    return await load_current_account(session, settings)
 
 
 CurrentAccount = Annotated[Account, Depends(get_current_account)]
