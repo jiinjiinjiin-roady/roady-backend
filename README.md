@@ -59,8 +59,8 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - `FRAME_META` receive path with next-message binary JPEG pairing, recoverable frame errors, and bounded in-memory latest-frame queue
   - app-scoped DriverMonitoringAdapter created during FastAPI lifespan startup and shared by health, bootstrap, session start, WebSocket handshake, and inference workers
   - connection-scoped inference worker consuming the latest-frame queue through the app-scoped deterministic Mock ViT adapter
-  - internal `NORMAL` detection result state, inference latency, processed-frame count, and failure count
-  - `DETECTION_UPDATE` publishing for successful inference results on the current WebSocket connection
+  - internal `DetectionResult` state with 3MDAD raw model action fields, inference latency, processed-frame count, and failure count
+  - `DETECTION_UPDATE` publishing with `behaviorType`, `modelActionType`, `modelClassCode`, and `modelClassLabel` for successful inference results on the current WebSocket connection
 - REST 3-6 integration, regression, and OpenAPI contract verification
 - Docker Compose stack for backend and MySQL
 - Ruff, pytest, compileall, OpenAPI, and smoke checks
@@ -72,7 +72,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Search History creation REST API
 - Agent messages, Gemini handling, ToolExecution handling, and Report Export APIs
 - Real ViT inference and Agent utterance handling
-- JPEG decode/preprocessing, sliding window, behavior event creation, risk policy, and interventions
+- JPEG decode/preprocessing, sliding window, BehaviorType DB migration, behavior event creation, risk policy, and interventions
 - Gemini calls, email delivery, and report file generation
 
 The default admin account is only seed data for early development. It is not a
@@ -392,7 +392,8 @@ cache, and enqueues accepted bytes into a bounded latest-frame queue. When the
 queue is full, the oldest frame is dropped and the latest frame is kept. A
 connection-scoped inference worker consumes accepted frames, calls the selected
 driver-monitoring adapter, and records internal runtime metrics/results. In
-MOCK mode the result is always `NORMAL` with confidence `0.99`.
+MOCK mode the result is always `SAFE_DRIVING` / `AC1` / `safe_driving`, mapped
+to `behaviorType=NORMAL` with confidence `0.99`.
 
 ```json
 {
@@ -402,6 +403,9 @@ MOCK mode the result is always `NORMAL` with confidence `0.99`.
     "sessionId": "67371b45-204c-4d87-b8f7-8a334229a41e",
     "frameId": "frame-3024",
     "behaviorType": "NORMAL",
+    "modelActionType": "SAFE_DRIVING",
+    "modelClassCode": "AC1",
+    "modelClassLabel": "safe_driving",
     "confidence": 0.99,
     "modelVersion": "vit-dms-1.0.0",
     "capturedAt": "2026-07-02T15:20:01.123456Z",
@@ -411,9 +415,11 @@ MOCK mode the result is always `NORMAL` with confidence `0.99`.
 ```
 
 `NORMAL` results are published so the frontend can confirm camera/inference
-connectivity. `riskLevel`, `behaviorEventId`, and `interventionId` are not part
-of this message yet. Frames and detection results are not written to DB, files,
-snapshots, logs, or Base64. Recoverable frame errors are
+connectivity. `behaviorType` is the normalized frontend category; the model
+action fields expose the raw 3MDAD top-1 class for debugging/detail views.
+`riskLevel`, `behaviorEventId`, `interventionId`, `speechText`, `uiText`, and
+`toolCall` are not part of this message yet. Frames and detection results are
+not written to DB, files, snapshots, logs, or Base64. Recoverable frame errors are
 `INVALID_FRAME_META`, `FRAME_BINARY_EXPECTED`,
 `FRAME_BINARY_TIMEOUT`, `ORPHAN_FRAME_BINARY`, `FRAME_TOO_LARGE`,
 `INVALID_JPEG_FRAME`, and `DUPLICATE_FRAME_ID`.
@@ -546,13 +552,13 @@ docker compose exec backend alembic current -> 0004_agent_report_tables (head)
 docker compose exec backend alembic heads -> 0004_agent_report_tables (head)
 docker compose exec backend ruff check . -> passed
 docker compose exec backend python -m compileall app -> passed
-docker compose exec backend pytest -ra -> 401 passed, 0 skipped, 1 warning
-4-4A targeted Docker pytest -> 143 passed, 0 skipped, 1 warning
+docker compose exec backend pytest -ra -> 441 passed, 0 skipped, 1 warning
+4-5-0A targeted Docker pytest -> 182 passed, 0 skipped, 1 warning
 MySQL-gated tests -> executed inside Docker Compose; no MYSQL_HOST/MYSQL_PASSWORD skip remains
 Live smoke -> health 200 DEGRADED with database UP and vitModel UP, bootstrap 200, Swagger /docs 200, OpenAPI 200
 Live session start smoke -> MOCK mode created ACTIVE session, returned webSocketUrl, ended COMPLETED, and cleaned up profile
-Live WebSocket smoke -> SESSION_READY then DETECTION_UPDATE for FRAME_META+binary with behaviorType NORMAL and confidence 0.99
-REAL mode smoke -> health vitModel DOWN, session start 503 MODEL_NOT_AVAILABLE, WebSocket handshake 503 MODEL_NOT_AVAILABLE
+Live WebSocket smoke -> SESSION_READY then DETECTION_UPDATE for FRAME_META+binary with behaviorType NORMAL, modelActionType SAFE_DRIVING, modelClassCode AC1, modelClassLabel safe_driving, and confidence 0.99
+REAL mode readiness regression -> covered by Docker pytest; live 4-5-0A smoke kept the stack in MOCK mode
 OpenAPI live check -> 27 REST method/path contracts present and WebSocket path absent from REST paths
 tzdata/ZoneInfo smoke -> tzdata 2026.2 and ZoneInfo("Asia/Seoul") passed
 OpenAPI Contract Test -> passed
@@ -586,14 +592,14 @@ PowerShell smoke -> health DEGRADED with database UP, vitModel UP, Gemini DOWN, 
 PowerShell smoke -> bootstrap and profiles returned 200
 Live WebSocket smoke -> invalid sessionId returned HTTP 422 INVALID_SESSION_ID JSON denial
 Live WebSocket smoke -> random missing session returned HTTP 404 SESSION_NOT_FOUND JSON denial
-Live WebSocket smoke -> SESSION_READY received, FRAME_META+binary sent, DETECTION_UPDATE received, smoke data cleaned up
+Live WebSocket smoke -> SESSION_READY received, FRAME_META+binary sent, DETECTION_UPDATE with model action fields received, smoke data cleaned up
 OpenAPI live check -> current 27 REST method/path contracts present
 OpenAPI live check -> /ws/v1/driving-sessions/{sessionId} absent from REST paths
 Swagger /docs -> 200 OK
 Alembic current/head -> 0004_agent_report_tables
 ```
 
-No Alembic revision was created for 4-4A, and the DB schema did not change.
+No Alembic revision was created for 4-5-0A, and the DB schema did not change.
 safetyScore is intentionally nullable until the future risk/safety score policy
 is implemented. The report read APIs aggregate stored data on request. Report
 Export, PDF rendering, file download, email sending, Agent message creation,

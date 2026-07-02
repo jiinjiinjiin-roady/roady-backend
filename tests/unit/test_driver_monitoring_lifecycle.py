@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import HTTPConnection
 
 from app.ai.driver_monitoring import DetectionBehaviorType, DetectionResult, InferenceFrame
+from app.ai.prediction_mapper import metadata_from_class_index
 from app.api.dependencies import get_driver_monitoring_adapter
 from app.core.exceptions import AppException
 from app.main import create_app
@@ -22,9 +23,13 @@ class ClosingAdapter:
 
     async def predict(self, frame: InferenceFrame) -> DetectionResult:
         timestamp = datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+        metadata = metadata_from_class_index(0)
         return DetectionResult(
             session_id=frame.session_id,
             frame_id=frame.frame_id,
+            model_action_type=metadata.action_type,
+            model_class_code=metadata.class_code,
+            model_class_label=metadata.class_label,
             behavior_type=DetectionBehaviorType.NORMAL,
             confidence=0.99,
             model_version=self.model_version,

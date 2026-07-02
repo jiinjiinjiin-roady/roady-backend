@@ -4,7 +4,8 @@ from typing import Any
 
 import pytest
 
-from app.ai.driver_monitoring import DetectionBehaviorType, DetectionResult, InferenceFrame
+from app.ai.driver_monitoring import DetectionResult, InferenceFrame
+from app.ai.prediction_mapper import metadata_from_class_index
 from app.realtime.inference_worker import InferenceWorker
 from app.realtime.session_runtime import (
     AcceptedFrame,
@@ -100,10 +101,14 @@ def accepted_frame(frame_id: str = "frame-1") -> AcceptedFrame:
 
 def detection_result(frame: InferenceFrame) -> DetectionResult:
     timestamp = datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+    metadata = metadata_from_class_index(0)
     return DetectionResult(
         session_id=frame.session_id,
         frame_id=frame.frame_id,
-        behavior_type=DetectionBehaviorType.NORMAL,
+        model_action_type=metadata.action_type,
+        model_class_code=metadata.class_code,
+        model_class_label=metadata.class_label,
+        behavior_type=metadata.detection_behavior_type,
         confidence=0.99,
         model_version="vit-test",
         captured_at=frame.captured_at,

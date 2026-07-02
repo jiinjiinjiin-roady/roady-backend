@@ -74,6 +74,9 @@ def test_detection_update_message_uses_implemented_contract() -> None:
         session_id="67371b45-204c-4d87-b8f7-8a334229a41e",
         frame_id="frame-3024",
         behavior_type="NORMAL",
+        model_action_type="SAFE_DRIVING",
+        model_class_code="AC1",
+        model_class_label="safe_driving",
         confidence=0.99,
         model_version="vit-dms-1.0.0",
         captured_at=datetime(2026, 6, 28, 3, 10, 10, 200000, tzinfo=UTC),
@@ -88,6 +91,9 @@ def test_detection_update_message_uses_implemented_contract() -> None:
             "sessionId": "67371b45-204c-4d87-b8f7-8a334229a41e",
             "frameId": "frame-3024",
             "behaviorType": "NORMAL",
+            "modelActionType": "SAFE_DRIVING",
+            "modelClassCode": "AC1",
+            "modelClassLabel": "safe_driving",
             "confidence": 0.99,
             "modelVersion": "vit-dms-1.0.0",
             "capturedAt": "2026-06-28T03:10:10.200000Z",
@@ -97,6 +103,9 @@ def test_detection_update_message_uses_implemented_contract() -> None:
     assert "riskLevel" not in message["payload"]
     assert "behaviorEventId" not in message["payload"]
     assert "interventionId" not in message["payload"]
+    assert "speechText" not in message["payload"]
+    assert "uiText" not in message["payload"]
+    assert "toolCall" not in message["payload"]
 
 
 def test_parse_client_pong_message_normalizes_timezone_to_utc() -> None:

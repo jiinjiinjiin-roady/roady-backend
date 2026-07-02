@@ -11,7 +11,8 @@ from sqlalchemy import delete, select
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
-from app.ai.driver_monitoring import DetectionBehaviorType, DetectionResult, InferenceFrame
+from app.ai.driver_monitoring import DetectionResult, InferenceFrame
+from app.ai.prediction_mapper import metadata_from_class_index
 from app.api.dependencies import get_current_account, get_settings_dependency
 from app.core.config import Settings
 from app.core.time import format_utc_datetime, utc_now_for_api_response, utc_now_for_mysql_datetime
@@ -80,10 +81,14 @@ class FailingThenSuccessDriverMonitoringAdapter:
 
 def _detection_result(frame: InferenceFrame) -> DetectionResult:
     timestamp = datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+    metadata = metadata_from_class_index(0)
     return DetectionResult(
         session_id=frame.session_id,
         frame_id=frame.frame_id,
-        behavior_type=DetectionBehaviorType.NORMAL,
+        model_action_type=metadata.action_type,
+        model_class_code=metadata.class_code,
+        model_class_label=metadata.class_label,
+        behavior_type=metadata.detection_behavior_type,
         confidence=0.99,
         model_version="vit-dms-1.0.0",
         captured_at=frame.captured_at,
@@ -407,6 +412,9 @@ def receive_detection_update(
         "sessionId",
         "frameId",
         "behaviorType",
+        "modelActionType",
+        "modelClassCode",
+        "modelClassLabel",
         "confidence",
         "modelVersion",
         "capturedAt",
@@ -415,6 +423,9 @@ def receive_detection_update(
     assert payload["sessionId"] == session_id
     assert payload["frameId"] == frame_id
     assert payload["behaviorType"] == "NORMAL"
+    assert payload["modelActionType"] == "SAFE_DRIVING"
+    assert payload["modelClassCode"] == "AC1"
+    assert payload["modelClassLabel"] == "safe_driving"
     assert payload["confidence"] == 0.99
     assert payload["modelVersion"] == model_version
     assert payload["capturedAt"] == format_utc_datetime(captured_at)

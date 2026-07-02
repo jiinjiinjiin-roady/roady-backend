@@ -38,6 +38,9 @@ class DetectionUpdatePublisher:
             session_id=session_id,
             frame_id=result.frame_id,
             behavior_type=result.behavior_type.value,
+            model_action_type=result.model_action_type.value,
+            model_class_code=result.model_class_code,
+            model_class_label=result.model_class_label,
             confidence=result.confidence,
             model_version=result.model_version,
             captured_at=result.captured_at,
@@ -53,10 +56,12 @@ class DetectionUpdatePublisher:
         except Exception:
             logger.warning(
                 "Failed to publish detection update session_id=%s frame_id=%s "
-                "behavior_type=%s confidence=%s latency_ms=%s model_version=%s",
+                "behavior_type=%s model_action_type=%s confidence=%s latency_ms=%s "
+                "model_version=%s",
                 session_id,
                 result.frame_id,
                 result.behavior_type.value,
+                result.model_action_type.value,
                 result.confidence,
                 result.inference_latency_ms,
                 result.model_version,

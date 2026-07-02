@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 from starlette.websockets import WebSocketState
 
-from app.ai.driver_monitoring import DetectionBehaviorType, DetectionResult
+from app.ai.driver_monitoring import DetectionResult
+from app.ai.prediction_mapper import metadata_from_class_index
 from app.realtime.connection_manager import ConnectionManager
 from app.realtime.detection_publisher import DetectionPublishStatus, DetectionUpdatePublisher
 
@@ -25,10 +26,14 @@ class FakeWebSocket:
 
 def detection_result(frame_id: str = "frame-1") -> DetectionResult:
     timestamp = datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+    metadata = metadata_from_class_index(0)
     return DetectionResult(
         session_id="session-1",
         frame_id=frame_id,
-        behavior_type=DetectionBehaviorType.NORMAL,
+        model_action_type=metadata.action_type,
+        model_class_code=metadata.class_code,
+        model_class_label=metadata.class_label,
+        behavior_type=metadata.detection_behavior_type,
         confidence=0.99,
         model_version="vit-test",
         captured_at=timestamp,
@@ -60,6 +65,9 @@ async def test_publish_sends_detection_update_to_current_connection() -> None:
                 "sessionId": "session-1",
                 "frameId": "frame-1",
                 "behaviorType": "NORMAL",
+                "modelActionType": "SAFE_DRIVING",
+                "modelClassCode": "AC1",
+                "modelClassLabel": "safe_driving",
                 "confidence": 0.99,
                 "modelVersion": "vit-test",
                 "capturedAt": "2026-06-28T03:10:00.000000Z",
@@ -70,6 +78,9 @@ async def test_publish_sends_detection_update_to_current_connection() -> None:
     assert "riskLevel" not in websocket.sent[0]["payload"]
     assert "behaviorEventId" not in websocket.sent[0]["payload"]
     assert "interventionId" not in websocket.sent[0]["payload"]
+    assert "speechText" not in websocket.sent[0]["payload"]
+    assert "uiText" not in websocket.sent[0]["payload"]
+    assert "toolCall" not in websocket.sent[0]["payload"]
 
 
 @pytest.mark.asyncio
