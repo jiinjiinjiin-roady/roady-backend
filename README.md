@@ -72,7 +72,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Search History creation REST API
 - Agent messages, Gemini handling, ToolExecution handling, and Report Export APIs
 - Real ViT inference and Agent utterance handling
-- JPEG decode/preprocessing, sliding window, BehaviorType DB migration, behavior event creation, risk policy, and interventions
+- JPEG decode/preprocessing, sliding window, behavior event writer/runtime state, risk policy, and interventions
 - Gemini calls, email delivery, and report file generation
 
 The default admin account is only seed data for early development. It is not a
@@ -423,6 +423,16 @@ not written to DB, files, snapshots, logs, or Base64. Recoverable frame errors a
 `INVALID_FRAME_META`, `FRAME_BINARY_EXPECTED`,
 `FRAME_BINARY_TIMEOUT`, `ORPHAN_FRAME_BINARY`, `FRAME_TOO_LARGE`,
 `INVALID_JPEG_FRAME`, and `DUPLICATE_FRAME_ID`.
+
+DB/report `BehaviorType` is separate from realtime `DetectionBehaviorType`.
+After 4-5-0B, stored behavior events and report filters allow exactly
+`DROWSINESS`, `PHONE_USE`, `FOOD_OR_DRINK`, `GAZE_AWAY`, `SECONDARY_TASK`,
+`REACHING_BEHIND`, and `SMOKING`. `NORMAL` remains realtime-only and is not
+stored in `behavior_events`. Raw `ModelActionType` values such as
+`SAFE_DRIVING`, `HAIR_MAKEUP`, `ADJUSTING_RADIO`, `GPS_OPERATING`, and
+`WRITING_MSG_RIGHT` are not DB behavior types. `dominant_model_action_type` was
+not added because Sliding Window and BehaviorEvent writer aggregation semantics
+are not defined yet.
 
 Local development defaults to MOCK mode, so ViT readiness is UP even when
 `/app/artifacts/models/best_vit.pth` is absent. REAL mode intentionally reports
