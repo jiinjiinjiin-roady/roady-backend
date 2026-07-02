@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.error_handlers import register_error_handlers
+from app.api.navigation_tmap import router as navigation_tmap_router
 from app.api.v1.endpoints.websocket import router as websocket_router
 from app.api.v1.router import router as api_v1_router
 from app.core.config import get_settings
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
     app.include_router(api_v1_router, prefix=settings.api_v1_prefix)
     app.include_router(websocket_router, prefix=settings.ws_v1_prefix)
+    app.include_router(navigation_tmap_router)
 
     return app
 
