@@ -57,6 +57,8 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - accept-before validation, SESSION_READY, PING/PONG heartbeat, duplicate replacement
   - `LOCATION_UPDATE` receive path, runtime location state, driving-state policy, and throttled `location_samples` persistence
   - `FRAME_META` receive path with next-message binary JPEG pairing, recoverable frame errors, and bounded in-memory latest-frame queue
+  - connection-scoped inference worker consuming the latest-frame queue through a deterministic Mock ViT adapter
+  - internal `NORMAL` detection result state, inference latency, processed-frame count, and failure count
 - REST 3-6 integration, regression, and OpenAPI contract verification
 - Docker Compose stack for backend and MySQL
 - Ruff, pytest, compileall, OpenAPI, and smoke checks
@@ -67,8 +69,9 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Account CRUD API
 - Search History creation REST API
 - Agent messages, Gemini handling, ToolExecution handling, and Report Export APIs
-- ViT inference, DETECTION_UPDATE, and Agent utterance handling
-- Gemini calls, email delivery, report file generation, and risk policy services
+- Real ViT inference, DETECTION_UPDATE, and Agent utterance handling
+- JPEG decode/preprocessing, sliding window, behavior event creation, risk policy, and interventions
+- Gemini calls, email delivery, and report file generation
 
 The default admin account is only seed data for early development. It is not a
 login account, has no password, and must not be treated as production
@@ -214,9 +217,10 @@ policy is applied by the future writer that creates search history rows.
 
 ## Driving Session API Example
 
-`POST /api/v1/driving-sessions` checks ViT model readiness through the existing
-health capability path. If `/app/artifacts/models/best_vit.pth` is absent, the
-start request returns `503 MODEL_NOT_AVAILABLE`.
+`POST /api/v1/driving-sessions` checks driver-monitoring readiness. The default
+`DRIVER_MONITORING_ADAPTER=MOCK` mode is ready without a model artifact. In
+`DRIVER_MONITORING_ADAPTER=REAL`, the real adapter is not implemented yet and
+the start request returns `503 MODEL_NOT_AVAILABLE`.
 
 ```powershell
 $startBody = @{
@@ -372,16 +376,19 @@ JPEG bytes. Successful frame ingestion is silent and does not send ACK messages:
 be binary JPEG data. The server validates configured byte size and JPEG SOI/EOI
 markers, rejects duplicate accepted `frameId` values with a bounded recent-ID
 cache, and enqueues accepted bytes into a bounded latest-frame queue. When the
-queue is full, the oldest frame is dropped and the latest frame is kept. Frames
-are not written to DB, files, snapshots, logs, or Base64. Recoverable frame
-errors are `INVALID_FRAME_META`, `FRAME_BINARY_EXPECTED`,
+queue is full, the oldest frame is dropped and the latest frame is kept. A
+connection-scoped inference worker consumes accepted frames, calls the selected
+driver-monitoring adapter, and records internal runtime metrics/results. In
+MOCK mode the result is always `NORMAL` with confidence `0.99`.
+`DETECTION_UPDATE` is not sent yet. Frames and detection results are not written
+to DB, files, snapshots, logs, or Base64. Recoverable frame errors are
+`INVALID_FRAME_META`, `FRAME_BINARY_EXPECTED`,
 `FRAME_BINARY_TIMEOUT`, `ORPHAN_FRAME_BINARY`, `FRAME_TOO_LARGE`,
 `INVALID_JPEG_FRAME`, and `DUPLICATE_FRAME_ID`.
 
-Local development commonly has ViT DOWN because `/app/artifacts/models/best_vit.pth`
-is absent, so live successful `SESSION_READY` smoke may be unavailable. The
-success path is covered by the MySQL WebSocket integration tests with explicit
-fake readiness.
+Local development defaults to MOCK mode, so ViT readiness is UP even when
+`/app/artifacts/models/best_vit.pth` is absent. REAL mode intentionally reports
+ViT DOWN until the real adapter is implemented.
 
 ## Agent Conversation API Example
 
@@ -505,10 +512,11 @@ Docker Compose verification -> backend/mysql healthy with current working tree
 Docker host port override used for this verification: BACKEND_EXPOSED_PORT=8001, MYSQL_EXPOSED_PORT=3308
 docker compose exec backend ruff check . -> passed
 docker compose exec backend python -m compileall app -> passed
-docker compose exec backend pytest -ra -> 372 passed, 0 skipped, 1 warning
-4-3A targeted Docker pytest -> 85 passed, 0 skipped, 1 warning
+docker compose exec backend pytest -ra -> 388 passed, 0 skipped, 1 warning
+4-3B1 targeted Docker pytest -> 129 passed, 0 skipped, 1 warning
 MySQL-gated tests -> executed inside Docker Compose; no MYSQL_HOST/MYSQL_PASSWORD skip remains
-Live smoke -> health 200 DEGRADED with database UP, bootstrap 200, Swagger /docs 200, OpenAPI 200
+Live smoke -> health 200 DEGRADED with database UP and vitModel UP, bootstrap 200, Swagger /docs 200, OpenAPI 200
+Live session start smoke -> MOCK mode created ACTIVE session, returned webSocketUrl, ended COMPLETED, and cleaned up profile
 OpenAPI live check -> 27 REST method/path contracts present and WebSocket path absent from REST paths
 tzdata/ZoneInfo smoke -> tzdata 2026.2 and ZoneInfo("Asia/Seoul") passed
 OpenAPI Contract Test -> passed
@@ -528,6 +536,8 @@ ConnectionManager Unit -> passed
 SessionRuntime Unit -> passed
 Heartbeat Unit -> passed
 Driving Session WebSocket MySQL Integration -> passed
+Mock Driver Monitoring Adapter Unit -> passed
+Inference Worker Unit -> passed
 Report Period Unit -> passed
 Report Sessions N+1 guard -> 2 fixed report-table SELECT statements
 REST 3-6 ownership isolation regression -> passed
@@ -535,23 +545,23 @@ REST 3-6 common error/204/camelCase/UTC Z regression -> passed
 REST 3-6 cascade cleanup regression -> passed
 Session end conversation-abort regression -> passed
 Concurrent fixed-place/favorite tests -> passed
-PowerShell smoke -> health DEGRADED with database UP and vitModel/Gemini/email DOWN
+PowerShell smoke -> health DEGRADED with database UP, vitModel UP, Gemini DOWN, email DOWN
 PowerShell smoke -> bootstrap and profiles returned 200
 Live WebSocket smoke -> invalid sessionId returned HTTP 422 INVALID_SESSION_ID JSON denial
 Live WebSocket smoke -> random missing session returned HTTP 404 SESSION_NOT_FOUND JSON denial
-Live SESSION_READY smoke -> skipped because local ViT model is DOWN and no prepared live ACTIVE session was created
+Live WebSocket smoke -> SESSION_READY received, FRAME_META+binary sent, no immediate DETECTION_UPDATE/server message, smoke data cleaned up
 OpenAPI live check -> current 27 REST method/path contracts present
 OpenAPI live check -> /ws/v1/driving-sessions/{sessionId} absent from REST paths
 Swagger /docs -> 200 OK
 Alembic current/head -> 0004_agent_report_tables
 ```
 
-No Alembic revision was created for 4-2, and the DB schema did not change.
+No Alembic revision was created for 4-3B1, and the DB schema did not change.
 safetyScore is intentionally nullable until the future risk/safety score policy
 is implemented. The report read APIs aggregate stored data on request. Report
 Export, PDF rendering, file download, email sending, Agent message creation,
-Tool executions, Gemini handling, Demo APIs, ViT inference, DETECTION_UPDATE,
-and WebSocket utterance handling remain future work.
+Tool executions, Gemini handling, Demo APIs, real ViT inference, DETECTION_UPDATE,
+sliding window/risk/intervention logic, and WebSocket utterance handling remain future work.
 
 ## Stop Containers
 
@@ -588,6 +598,8 @@ Settings are loaded from environment variables and `.env`.
 - `DEFAULT_ADMIN_EMAIL`
 - `MODEL_PATH`
 - `MODEL_VERSION`
+- `DRIVER_MONITORING_ADAPTER`
+- `MOCK_VIT_INFERENCE_LATENCY_MS`
 - `POLICY_VERSION`
 - `WS_RECOMMENDED_FRAME_FPS`
 - `WS_LOCATION_INTERVAL_MS`

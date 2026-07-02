@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from app.ai.driver_monitoring import DetectionResult
 from app.core.enums import DrivingState, LocationSource
 from app.core.time import utc_now_for_api_response
 
@@ -95,6 +96,7 @@ class SessionRuntime:
     last_location_persisted_at: datetime | None = None
     last_location_persisted_monotonic: float | None = None
     latest_frame_queue: LatestFrameQueue | None = None
+    frame_available_event: asyncio.Event | None = None
     recent_frame_ids: OrderedDict[str, None] | None = None
     frame_queue_max_size: int = 2
     frame_recent_id_cache_size: int = 256
@@ -102,6 +104,12 @@ class SessionRuntime:
     last_accepted_captured_at: datetime | None = None
     accepted_frame_count: int = 0
     dropped_frame_count: int = 0
+    connection_generation: int = 0
+    last_detection_result: DetectionResult | None = None
+    last_inference_completed_at: datetime | None = None
+    last_inference_latency_ms: int | None = None
+    processed_frame_count: int = 0
+    inference_failure_count: int = 0
     active_behavior_event_id: str | None = None
     current_intervention_id: str | None = None
     active_conversation_id: str | None = None
@@ -146,6 +154,17 @@ class LocationRuntimeApplyResult:
     snapshot: LocationRuntimeSnapshot | None
 
 
+@dataclass(frozen=True, slots=True)
+class InferenceRuntimeSnapshot:
+    session_id: str
+    connection_generation: int
+    last_detection_result: DetectionResult | None
+    last_inference_completed_at: datetime | None
+    last_inference_latency_ms: int | None
+    processed_frame_count: int
+    inference_failure_count: int
+
+
 class SessionRuntimeRegistry:
     def __init__(self) -> None:
         self._runtimes: dict[str, SessionRuntime] = {}
@@ -175,12 +194,34 @@ class SessionRuntimeRegistry:
                 last_message_at=now,
                 last_heartbeat_at=now,
                 latest_frame_queue=LatestFrameQueue(frame_queue_max_size),
+                frame_available_event=asyncio.Event(),
                 recent_frame_ids=OrderedDict(),
                 frame_queue_max_size=frame_queue_max_size,
                 frame_recent_id_cache_size=frame_recent_id_cache_size,
             )
             self._runtimes[session_id] = runtime
             return runtime
+
+    async def prepare_connection(
+        self,
+        session_id: str,
+        *,
+        frame_queue_max_size: int,
+        frame_recent_id_cache_size: int,
+    ) -> int | None:
+        async with self._lock:
+            runtime = self._runtimes.get(session_id)
+            if runtime is None:
+                return None
+
+            runtime.connection_generation += 1
+            self._reset_frame_state_locked(
+                runtime,
+                frame_queue_max_size=frame_queue_max_size,
+                frame_recent_id_cache_size=frame_recent_id_cache_size,
+            )
+            self._reset_inference_state_locked(runtime)
+            return runtime.connection_generation
 
     async def get(self, session_id: str) -> SessionRuntime | None:
         async with self._lock:
@@ -279,14 +320,12 @@ class SessionRuntimeRegistry:
             if runtime is None:
                 return False
 
-            runtime.latest_frame_queue = LatestFrameQueue(frame_queue_max_size)
-            runtime.recent_frame_ids = OrderedDict()
-            runtime.frame_queue_max_size = frame_queue_max_size
-            runtime.frame_recent_id_cache_size = frame_recent_id_cache_size
-            runtime.last_accepted_frame_id = None
-            runtime.last_accepted_captured_at = None
-            runtime.accepted_frame_count = 0
-            runtime.dropped_frame_count = 0
+            self._reset_frame_state_locked(
+                runtime,
+                frame_queue_max_size=frame_queue_max_size,
+                frame_recent_id_cache_size=frame_recent_id_cache_size,
+            )
+            self._reset_inference_state_locked(runtime)
             return True
 
     async def accept_frame(self, session_id: str, frame: AcceptedFrame) -> FrameAcceptResult:
@@ -297,6 +336,8 @@ class SessionRuntimeRegistry:
 
             if runtime.latest_frame_queue is None:
                 runtime.latest_frame_queue = LatestFrameQueue(runtime.frame_queue_max_size)
+            if runtime.frame_available_event is None:
+                runtime.frame_available_event = asyncio.Event()
             if runtime.recent_frame_ids is None:
                 runtime.recent_frame_ids = OrderedDict()
 
@@ -313,6 +354,7 @@ class SessionRuntimeRegistry:
             runtime.last_accepted_captured_at = frame.metadata.captured_at
             dropped_count = 1 if queue_result.dropped_frame is not None else 0
             runtime.dropped_frame_count += dropped_count
+            runtime.frame_available_event.set()
             return FrameAcceptResult(
                 status=FrameAcceptStatus.ACCEPTED,
                 dropped_count=dropped_count,
@@ -332,12 +374,89 @@ class SessionRuntimeRegistry:
                 return None
             return runtime.latest_frame_queue.get()
 
+    async def wait_for_next_frame(
+        self,
+        session_id: str,
+        *,
+        connection_generation: int | None = None,
+    ) -> AcceptedFrame | None:
+        while True:
+            async with self._lock:
+                runtime = self._runtimes.get(session_id)
+                if runtime is None:
+                    return None
+                if (
+                    connection_generation is not None
+                    and runtime.connection_generation != connection_generation
+                ):
+                    return None
+                if runtime.latest_frame_queue is None:
+                    runtime.latest_frame_queue = LatestFrameQueue(runtime.frame_queue_max_size)
+                if runtime.frame_available_event is None:
+                    runtime.frame_available_event = asyncio.Event()
+
+                frame = runtime.latest_frame_queue.get()
+                if frame is not None:
+                    return frame
+
+                event = runtime.frame_available_event
+                event.clear()
+
+            await event.wait()
+
+    async def record_detection_result(
+        self,
+        session_id: str,
+        *,
+        connection_generation: int,
+        result: DetectionResult,
+    ) -> bool:
+        async with self._lock:
+            runtime = self._runtimes.get(session_id)
+            if runtime is None or runtime.connection_generation != connection_generation:
+                return False
+
+            runtime.last_detection_result = result
+            runtime.last_inference_completed_at = result.inference_completed_at
+            runtime.last_inference_latency_ms = result.inference_latency_ms
+            runtime.processed_frame_count += 1
+            return True
+
+    async def record_inference_failure(
+        self,
+        session_id: str,
+        *,
+        connection_generation: int,
+    ) -> bool:
+        async with self._lock:
+            runtime = self._runtimes.get(session_id)
+            if runtime is None or runtime.connection_generation != connection_generation:
+                return False
+
+            runtime.inference_failure_count += 1
+            return True
+
+    async def get_inference_snapshot(self, session_id: str) -> InferenceRuntimeSnapshot | None:
+        async with self._lock:
+            runtime = self._runtimes.get(session_id)
+            if runtime is None:
+                return None
+            return self._inference_snapshot(runtime)
+
     async def remove(self, session_id: str) -> bool:
         async with self._lock:
-            return self._runtimes.pop(session_id, None) is not None
+            runtime = self._runtimes.pop(session_id, None)
+            if runtime is None:
+                return False
+            if runtime.frame_available_event is not None:
+                runtime.frame_available_event.set()
+            return True
 
     async def clear(self) -> None:
         async with self._lock:
+            for runtime in self._runtimes.values():
+                if runtime.frame_available_event is not None:
+                    runtime.frame_available_event.set()
             self._runtimes.clear()
 
     @staticmethod
@@ -354,3 +473,42 @@ class SessionRuntimeRegistry:
             last_location_persisted_at=runtime.last_location_persisted_at,
             last_location_persisted_monotonic=runtime.last_location_persisted_monotonic,
         )
+
+    @staticmethod
+    def _inference_snapshot(runtime: SessionRuntime) -> InferenceRuntimeSnapshot:
+        return InferenceRuntimeSnapshot(
+            session_id=runtime.session_id,
+            connection_generation=runtime.connection_generation,
+            last_detection_result=runtime.last_detection_result,
+            last_inference_completed_at=runtime.last_inference_completed_at,
+            last_inference_latency_ms=runtime.last_inference_latency_ms,
+            processed_frame_count=runtime.processed_frame_count,
+            inference_failure_count=runtime.inference_failure_count,
+        )
+
+    @staticmethod
+    def _reset_frame_state_locked(
+        runtime: SessionRuntime,
+        *,
+        frame_queue_max_size: int,
+        frame_recent_id_cache_size: int,
+    ) -> None:
+        if runtime.frame_available_event is not None:
+            runtime.frame_available_event.set()
+        runtime.latest_frame_queue = LatestFrameQueue(frame_queue_max_size)
+        runtime.frame_available_event = asyncio.Event()
+        runtime.recent_frame_ids = OrderedDict()
+        runtime.frame_queue_max_size = frame_queue_max_size
+        runtime.frame_recent_id_cache_size = frame_recent_id_cache_size
+        runtime.last_accepted_frame_id = None
+        runtime.last_accepted_captured_at = None
+        runtime.accepted_frame_count = 0
+        runtime.dropped_frame_count = 0
+
+    @staticmethod
+    def _reset_inference_state_locked(runtime: SessionRuntime) -> None:
+        runtime.last_detection_result = None
+        runtime.last_inference_completed_at = None
+        runtime.last_inference_latency_ms = None
+        runtime.processed_frame_count = 0
+        runtime.inference_failure_count = 0

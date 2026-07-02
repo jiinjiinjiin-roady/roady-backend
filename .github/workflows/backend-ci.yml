@@ -56,6 +56,8 @@ jobs:
 
           MODEL_PATH=/app/artifacts/models/best_vit.pth
           MODEL_VERSION=vit-dms-1.0.0
+          DRIVER_MONITORING_ADAPTER=MOCK
+          MOCK_VIT_INFERENCE_LATENCY_MS=0
           POLICY_VERSION=risk-policy-1.0.0
           WS_RECOMMENDED_FRAME_FPS=5
           WS_LOCATION_INTERVAL_MS=1000

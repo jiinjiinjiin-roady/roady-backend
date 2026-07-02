@@ -1,9 +1,9 @@
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 
 from app.core.config import Settings
 from app.core.time import utc_now_for_api_response
 from app.db.init_db import check_database_connection
+from app.integrations.driver_monitoring import HealthDriverMonitoringReadiness
 from app.schemas.health import HealthResponse, HealthServices, ServiceState
 
 
@@ -16,9 +16,11 @@ class HealthService:
         self,
         settings: Settings,
         db_checker: Callable[[], Awaitable[None]] = check_database_connection,
+        vit_model_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self.settings = settings
         self.db_checker = db_checker
+        self.vit_model_checker = vit_model_checker
 
     async def get_health(self) -> HealthResponse:
         try:
@@ -26,9 +28,10 @@ class HealthService:
         except Exception as exc:
             raise DatabaseUnavailableError("Database connection check failed.") from exc
 
+        vit_model_available = await self.is_vit_model_available()
         services = HealthServices(
             database="UP",
-            vit_model=self._service_state(self.is_vit_model_available()),
+            vit_model=self._service_state(vit_model_available),
             gemini=self._service_state(self.is_gemini_configured()),
             email=self._service_state(self.is_email_configured()),
         )
@@ -49,8 +52,10 @@ class HealthService:
             checked_at=utc_now_for_api_response(),
         )
 
-    def is_vit_model_available(self) -> bool:
-        return Path(self.settings.model_path).is_file()
+    async def is_vit_model_available(self) -> bool:
+        if self.vit_model_checker is not None:
+            return await self.vit_model_checker()
+        return await HealthDriverMonitoringReadiness(self.settings).is_available()
 
     def is_gemini_configured(self) -> bool:
         return bool(self.settings.gemini_api_key and self.settings.gemini_model)

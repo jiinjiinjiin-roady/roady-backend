@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from sqlalchemy import delete, select
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
+from app.ai.driver_monitoring import DetectionBehaviorType, DetectionResult, InferenceFrame
 from app.api.dependencies import get_current_account, get_settings_dependency
 from app.api.v1.endpoints.driving_sessions import get_driver_monitoring_readiness
 from app.core.config import Settings
@@ -34,6 +36,53 @@ class FakeReadiness:
 
     async def is_available(self) -> bool:
         return self.available
+
+
+class BlockingDriverMonitoringAdapter:
+    model_version = "vit-dms-1.0.0"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def is_ready(self) -> bool:
+        return True
+
+    async def predict(self, frame: InferenceFrame) -> DetectionResult:
+        self.started.set()
+        await self.release.wait()
+        return _detection_result(frame)
+
+
+class FailingThenSuccessDriverMonitoringAdapter:
+    model_version = "vit-dms-1.0.0"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def is_ready(self) -> bool:
+        return True
+
+    async def predict(self, frame: InferenceFrame) -> DetectionResult:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("inference failed")
+        return _detection_result(frame)
+
+
+def _detection_result(frame: InferenceFrame) -> DetectionResult:
+    timestamp = datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+    return DetectionResult(
+        session_id=frame.session_id,
+        frame_id=frame.frame_id,
+        behavior_type=DetectionBehaviorType.NORMAL,
+        confidence=0.99,
+        model_version="vit-dms-1.0.0",
+        captured_at=frame.captured_at,
+        inference_started_at=timestamp,
+        inference_completed_at=timestamp + timedelta(milliseconds=5),
+        inference_latency_ms=5,
+    )
 
 
 @dataclass(slots=True)
@@ -164,6 +213,27 @@ async def get_runtime_frame_bytes(app, session_id: str) -> list[bytes]:
     return [frame.jpeg_bytes for frame in frames]
 
 
+async def get_runtime_inference_state(app, session_id: str) -> dict[str, object | None]:
+    snapshot = await app.state.session_runtime_registry.get_inference_snapshot(session_id)
+    if snapshot is None:
+        return {
+            "lastFrameId": None,
+            "lastBehaviorType": None,
+            "confidence": None,
+            "processedFrameCount": 0,
+            "inferenceFailureCount": 0,
+        }
+
+    result = snapshot.last_detection_result
+    return {
+        "lastFrameId": None if result is None else result.frame_id,
+        "lastBehaviorType": None if result is None else result.behavior_type.value,
+        "confidence": None if result is None else result.confidence,
+        "processedFrameCount": snapshot.processed_frame_count,
+        "inferenceFailureCount": snapshot.inference_failure_count,
+    }
+
+
 async def complete_driving_session(session_id: str) -> None:
     async with AsyncSessionLocal() as session:
         driving_session = await session.get(DrivingSession, session_id)
@@ -190,6 +260,13 @@ def override_settings(app, settings: Settings) -> None:
         return settings
 
     app.dependency_overrides[get_settings_dependency] = settings_override
+
+
+def override_driver_monitoring_adapter(app, adapter) -> None:
+    def driver_monitoring_adapter_factory(*, settings):
+        return adapter
+
+    app.state.driver_monitoring_adapter_factory = driver_monitoring_adapter_factory
 
 
 def override_location_update_service(app, clock: FakeMonotonicClock) -> None:
@@ -459,15 +536,19 @@ def test_websocket_orphan_binary_is_recoverable(app) -> None:
                 websocket.send_json(frame_meta_message(base_time))
                 websocket.send_bytes(minimal_jpeg())
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-1"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-1"
                 )
         finally:
             app.dependency_overrides.clear()
             client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
 
 
-def test_websocket_frame_meta_binary_pair_enqueues_without_ack_or_db_write(app) -> None:
+def test_websocket_frame_meta_binary_pair_runs_internal_inference_without_db_write(app) -> None:
     with TestClient(app) as client:
         data = client.portal.call(create_test_data)
         override_dependencies(app, data.current_account)
@@ -483,13 +564,71 @@ def test_websocket_frame_meta_binary_pair_enqueues_without_ack_or_db_write(app) 
                 websocket.send_bytes(minimal_jpeg())
 
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-1"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )
+                    == {
+                        "lastFrameId": "frame-1",
+                        "lastBehaviorType": "NORMAL",
+                        "confidence": 0.99,
+                        "processedFrameCount": 1,
+                        "inferenceFailureCount": 0,
+                    }
                 )
-                assert client.portal.call(get_runtime_frame_bytes, app, data.active_session_id) == [
-                    minimal_jpeg()
-                ]
+                assert client.portal.call(list_runtime_frame_ids, app, data.active_session_id) == []
                 assert len(client.portal.call(list_location_samples, data.active_session_id)) == 0
+        finally:
+            app.dependency_overrides.clear()
+            client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
+
+
+def test_websocket_inference_failure_recovers_on_next_frame(app) -> None:
+    with TestClient(app) as client:
+        data = client.portal.call(create_test_data)
+        override_dependencies(app, data.current_account)
+        adapter = FailingThenSuccessDriverMonitoringAdapter()
+        override_driver_monitoring_adapter(app, adapter)
+        base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
+
+        try:
+            with client.websocket_connect(
+                f"/ws/v1/driving-sessions/{data.active_session_id}"
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "SESSION_READY"
+
+                websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["inferenceFailureCount"]
+                    == 1
+                )
+
+                websocket.send_json(
+                    frame_meta_message(base_time + timedelta(seconds=1), frame_id="frame-2")
+                )
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-2"
+                )
+                state = client.portal.call(
+                    get_runtime_inference_state,
+                    app,
+                    data.active_session_id,
+                )
+                assert state["processedFrameCount"] == 1
+                assert state["inferenceFailureCount"] == 1
+                assert adapter.calls == 2
         finally:
             app.dependency_overrides.clear()
             client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
@@ -499,6 +638,14 @@ def test_websocket_frame_queue_backpressure_drops_oldest(app) -> None:
     with TestClient(app) as client:
         data = client.portal.call(create_test_data)
         override_dependencies(app, data.current_account)
+        adapter_holder: dict[str, BlockingDriverMonitoringAdapter] = {}
+
+        def adapter_factory(*, settings):
+            adapter = BlockingDriverMonitoringAdapter()
+            adapter_holder["adapter"] = adapter
+            return adapter
+
+        app.state.driver_monitoring_adapter_factory = adapter_factory
         base_time = datetime(2026, 6, 28, 3, 10, 10, tzinfo=UTC)
 
         try:
@@ -507,7 +654,18 @@ def test_websocket_frame_queue_backpressure_drops_oldest(app) -> None:
             ) as websocket:
                 assert websocket.receive_json()["type"] == "SESSION_READY"
 
-                for index in range(1, 4):
+                websocket.send_json(
+                    frame_meta_message(
+                        base_time + timedelta(milliseconds=1),
+                        frame_id="frame-1",
+                    )
+                )
+                websocket.send_bytes(minimal_jpeg())
+                wait_for_condition(
+                    lambda: client.portal.call(lambda: adapter_holder["adapter"].started.is_set())
+                )
+
+                for index in range(2, 5):
                     websocket.send_json(
                         frame_meta_message(
                             base_time + timedelta(milliseconds=index),
@@ -518,11 +676,12 @@ def test_websocket_frame_queue_backpressure_drops_oldest(app) -> None:
 
                 wait_for_condition(
                     lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-2", "frame-3"]
+                    == ["frame-3", "frame-4"]
                 )
                 runtime = app.state.session_runtime_registry._runtimes[data.active_session_id]
-                assert runtime.accepted_frame_count == 3
+                assert runtime.accepted_frame_count == 4
                 assert runtime.dropped_frame_count == 1
+                client.portal.call(adapter_holder["adapter"].release.set)
         finally:
             app.dependency_overrides.clear()
             client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
@@ -549,8 +708,12 @@ def test_websocket_invalid_frame_meta_is_recoverable(app) -> None:
                 websocket.send_json(frame_meta_message(base_time + timedelta(seconds=1)))
                 websocket.send_bytes(minimal_jpeg())
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-1"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-1"
                 )
         finally:
             app.dependency_overrides.clear()
@@ -589,8 +752,12 @@ def test_websocket_invalid_jpeg_and_too_large_are_recoverable(app) -> None:
                 )
                 websocket.send_bytes(minimal_jpeg())
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-1"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-1"
                 )
         finally:
             app.dependency_overrides.clear()
@@ -612,8 +779,12 @@ def test_websocket_duplicate_frame_id_is_recoverable(app) -> None:
                 websocket.send_json(frame_meta_message(base_time, frame_id="frame-1"))
                 websocket.send_bytes(minimal_jpeg())
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-1"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-1"
                 )
 
                 websocket.send_json(
@@ -623,9 +794,12 @@ def test_websocket_duplicate_frame_id_is_recoverable(app) -> None:
                 duplicate = websocket.receive_json()
                 assert duplicate["payload"]["code"] == "DUPLICATE_FRAME_ID"
                 assert duplicate["payload"]["recoverable"] is True
-                assert client.portal.call(list_runtime_frame_ids, app, data.active_session_id) == [
-                    "frame-1"
-                ]
+                assert client.portal.call(list_runtime_frame_ids, app, data.active_session_id) == []
+                assert client.portal.call(
+                    get_runtime_inference_state,
+                    app,
+                    data.active_session_id,
+                )["processedFrameCount"] == 1
         finally:
             app.dependency_overrides.clear()
             client.portal.call(delete_test_accounts, data.current_account.id, data.other_account.id)
@@ -654,8 +828,12 @@ def test_websocket_frame_binary_timeout_is_recoverable(app) -> None:
                 )
                 websocket.send_bytes(minimal_jpeg())
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-2"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-2"
                 )
         finally:
             app.dependency_overrides.clear()
@@ -918,8 +1096,12 @@ def test_websocket_duplicate_connection_replaces_previous_connection(app) -> Non
                 first.send_json(frame_meta_message(base_time, frame_id="frame-1"))
                 first.send_bytes(minimal_jpeg())
                 wait_for_condition(
-                    lambda: client.portal.call(list_runtime_frame_ids, app, data.active_session_id)
-                    == ["frame-1"]
+                    lambda: client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["lastFrameId"]
+                    == "frame-1"
                 )
 
                 with client.websocket_connect(
@@ -940,6 +1122,11 @@ def test_websocket_duplicate_connection_replaces_previous_connection(app) -> Non
                         app,
                         data.active_session_id,
                     ) == []
+                    assert client.portal.call(
+                        get_runtime_inference_state,
+                        app,
+                        data.active_session_id,
+                    )["processedFrameCount"] == 0
 
                     second.send_json(
                         frame_meta_message(base_time + timedelta(seconds=1), frame_id="frame-1")
@@ -947,11 +1134,11 @@ def test_websocket_duplicate_connection_replaces_previous_connection(app) -> Non
                     second.send_bytes(minimal_jpeg())
                     wait_for_condition(
                         lambda: client.portal.call(
-                            list_runtime_frame_ids,
+                            get_runtime_inference_state,
                             app,
                             data.active_session_id,
-                        )
-                        == ["frame-1"]
+                        )["lastFrameId"]
+                        == "frame-1"
                     )
 
                 wait_for_condition(lambda: app.state.websocket_connection_manager.active_count == 0)

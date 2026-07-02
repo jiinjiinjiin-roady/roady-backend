@@ -1,7 +1,7 @@
 import json
 from collections.abc import Iterable
 from functools import lru_cache
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import quote_plus
 from uuid import UUID
 
@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     backend_exposed_port: int = 8000
     model_path: str = "/app/artifacts/models/best_vit.pth"
     model_version: str = "vit-dms-1.0.0"
+    driver_monitoring_adapter: Literal["MOCK", "REAL"] = "MOCK"
+    mock_vit_inference_latency_ms: int = 0
     policy_version: str = "risk-policy-1.0.0"
     ws_recommended_frame_fps: int = 5
     ws_location_interval_ms: int = 1000
@@ -122,6 +124,11 @@ class Settings(BaseSettings):
         email = str(value).strip()
         return email or None
 
+    @field_validator("driver_monitoring_adapter", mode="before")
+    @classmethod
+    def normalize_driver_monitoring_adapter(cls, value: object) -> str:
+        return str(value).strip().upper()
+
     @field_validator(
         "ws_recommended_frame_fps",
         "ws_location_interval_ms",
@@ -146,6 +153,13 @@ class Settings(BaseSettings):
     def validate_positive_frame_setting(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("WebSocket frame settings must be positive.")
+        return value
+
+    @field_validator("mock_vit_inference_latency_ms")
+    @classmethod
+    def validate_mock_vit_inference_latency_ms(cls, value: int) -> int:
+        if value < 0 or value > 10000:
+            raise ValueError("MOCK_VIT_INFERENCE_LATENCY_MS must be between 0 and 10000.")
         return value
 
     @field_validator("ws_frame_queue_max_size")

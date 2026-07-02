@@ -144,7 +144,7 @@ async def test_health_is_degraded_when_optional_services_are_unconfigured(app, c
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "DEGRADED"
-    assert payload["services"]["vitModel"] == "DOWN"
+    assert payload["services"]["vitModel"] == "UP"
     assert payload["services"]["gemini"] == "DOWN"
     assert payload["services"]["email"] == "DOWN"
 

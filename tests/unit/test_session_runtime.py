@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.ai.driver_monitoring import DetectionBehaviorType, DetectionResult
 from app.core.enums import DrivingState, LocationSource
 from app.realtime.session_runtime import (
     AcceptedFrame,
@@ -34,6 +35,12 @@ async def test_runtime_initial_fields_and_touch_methods() -> None:
     assert runtime.last_location_occurred_at is None
     assert runtime.last_location_persisted_at is None
     assert runtime.last_location_persisted_monotonic is None
+    assert runtime.connection_generation == 0
+    assert runtime.last_detection_result is None
+    assert runtime.last_inference_completed_at is None
+    assert runtime.last_inference_latency_ms is None
+    assert runtime.processed_frame_count == 0
+    assert runtime.inference_failure_count == 0
     assert runtime.active_behavior_event_id is None
     assert runtime.current_intervention_id is None
     assert runtime.active_conversation_id is None
@@ -202,6 +209,21 @@ def accepted_frame(frame_id: str, captured_at: datetime | None = None) -> Accept
     )
 
 
+def detection_result(frame_id: str = "frame-1") -> DetectionResult:
+    timestamp = datetime(2026, 6, 28, 3, 10, tzinfo=UTC)
+    return DetectionResult(
+        session_id="session-1",
+        frame_id=frame_id,
+        behavior_type=DetectionBehaviorType.NORMAL,
+        confidence=0.99,
+        model_version="vit-dms-1.0.0",
+        captured_at=timestamp,
+        inference_started_at=timestamp,
+        inference_completed_at=timestamp + timedelta(milliseconds=5),
+        inference_latency_ms=5,
+    )
+
+
 @pytest.mark.asyncio
 async def test_frame_queue_drops_oldest_and_keeps_latest_two() -> None:
     registry = SessionRuntimeRegistry()
@@ -220,6 +242,87 @@ async def test_frame_queue_drops_oldest_and_keeps_latest_two() -> None:
     assert runtime.accepted_frame_count == 3
     assert runtime.dropped_frame_count == 1
     assert runtime.last_accepted_frame_id == "frame-3"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_next_frame_awaits_signal_without_polling() -> None:
+    registry = SessionRuntimeRegistry()
+    await registry.get_or_create("session-1")
+    waiter = asyncio.create_task(registry.wait_for_next_frame("session-1"))
+
+    assert not waiter.done()
+
+    await registry.accept_frame("session-1", accepted_frame("frame-1"))
+    frame = await asyncio.wait_for(waiter, timeout=1)
+
+    assert frame is not None
+    assert frame.metadata.frame_id == "frame-1"
+    assert await registry.get_latest_frame_queue_snapshot("session-1") == ()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_next_frame_returns_none_after_generation_changes() -> None:
+    registry = SessionRuntimeRegistry()
+    await registry.get_or_create("session-1")
+    generation = await registry.prepare_connection(
+        "session-1",
+        frame_queue_max_size=2,
+        frame_recent_id_cache_size=256,
+    )
+    assert generation is not None
+    waiter = asyncio.create_task(
+        registry.wait_for_next_frame("session-1", connection_generation=generation)
+    )
+
+    await registry.prepare_connection(
+        "session-1",
+        frame_queue_max_size=2,
+        frame_recent_id_cache_size=256,
+    )
+
+    assert await asyncio.wait_for(waiter, timeout=1) is None
+
+
+@pytest.mark.asyncio
+async def test_inference_result_and_failure_recording_are_generation_scoped() -> None:
+    registry = SessionRuntimeRegistry()
+    await registry.get_or_create("session-1")
+    generation = await registry.prepare_connection(
+        "session-1",
+        frame_queue_max_size=2,
+        frame_recent_id_cache_size=256,
+    )
+    assert generation == 1
+
+    stale_result = await registry.record_detection_result(
+        "session-1",
+        connection_generation=0,
+        result=detection_result("old-frame"),
+    )
+    success = await registry.record_detection_result(
+        "session-1",
+        connection_generation=generation,
+        result=detection_result("frame-1"),
+    )
+    failure = await registry.record_inference_failure(
+        "session-1",
+        connection_generation=generation,
+    )
+    stale_failure = await registry.record_inference_failure(
+        "session-1",
+        connection_generation=0,
+    )
+    snapshot = await registry.get_inference_snapshot("session-1")
+
+    assert stale_result is False
+    assert success is True
+    assert failure is True
+    assert stale_failure is False
+    assert snapshot is not None
+    assert snapshot.last_detection_result is not None
+    assert snapshot.last_detection_result.frame_id == "frame-1"
+    assert snapshot.processed_frame_count == 1
+    assert snapshot.inference_failure_count == 1
 
 
 @pytest.mark.asyncio
@@ -269,6 +372,12 @@ async def test_reset_frame_state_preserves_location_state() -> None:
         ),
     )
     await registry.accept_frame("session-1", accepted_frame("frame-1"))
+    await registry.record_detection_result(
+        "session-1",
+        connection_generation=0,
+        result=detection_result("frame-1"),
+    )
+    await registry.record_inference_failure("session-1", connection_generation=0)
 
     reset = await registry.reset_frame_state(
         "session-1",
@@ -286,3 +395,6 @@ async def test_reset_frame_state_preserves_location_state() -> None:
     assert runtime is not None
     assert runtime.accepted_frame_count == 0
     assert runtime.last_accepted_frame_id is None
+    assert runtime.last_detection_result is None
+    assert runtime.processed_frame_count == 0
+    assert runtime.inference_failure_count == 0

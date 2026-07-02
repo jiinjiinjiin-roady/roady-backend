@@ -51,13 +51,13 @@ class BootstrapService:
             profiles=[ProfileSummaryResponse.model_validate(profile) for profile in profiles],
             selected_profile_id=selected_profile.id if selected_profile is not None else None,
             profile_limit=PROFILE_LIMIT,
-            capabilities=self._capabilities(),
+            capabilities=await self._capabilities(),
         )
 
-    def _capabilities(self) -> BootstrapCapabilitiesResponse:
+    async def _capabilities(self) -> BootstrapCapabilitiesResponse:
         health_service = HealthService(settings=self.settings)
         return BootstrapCapabilitiesResponse(
-            vit_model_available=health_service.is_vit_model_available(),
+            vit_model_available=await health_service.is_vit_model_available(),
             gemini_available=health_service.is_gemini_configured(),
             email_available=health_service.is_email_configured(),
             demo_mode=self.settings.demo_mode,

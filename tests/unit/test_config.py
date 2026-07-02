@@ -70,6 +70,8 @@ def test_settings_exposes_default_websocket_runtime_settings() -> None:
     assert settings.ws_frame_recent_id_cache_size == 256
     assert settings.ws_frame_max_width == 1920
     assert settings.ws_frame_max_height == 1080
+    assert settings.driver_monitoring_adapter == "MOCK"
+    assert settings.mock_vit_inference_latency_ms == 0
     assert settings.driving_moving_speed_threshold_kph == 5.0
     assert settings.driving_location_max_accuracy_meters == 100.0
 
@@ -86,6 +88,22 @@ def test_settings_rejects_non_positive_websocket_runtime_settings() -> None:
 
     with pytest.raises(ValidationError):
         Settings(ws_frame_binary_timeout_ms=0)
+
+
+def test_settings_normalizes_and_validates_driver_monitoring_adapter() -> None:
+    assert Settings(driver_monitoring_adapter="mock").driver_monitoring_adapter == "MOCK"
+    assert Settings(driver_monitoring_adapter="REAL").driver_monitoring_adapter == "REAL"
+
+    with pytest.raises(ValidationError):
+        Settings(driver_monitoring_adapter="unsupported")
+
+
+def test_settings_rejects_invalid_mock_vit_latency() -> None:
+    with pytest.raises(ValidationError):
+        Settings(mock_vit_inference_latency_ms=-1)
+
+    with pytest.raises(ValidationError):
+        Settings(mock_vit_inference_latency_ms=10001)
 
 
 def test_settings_rejects_invalid_websocket_frame_settings() -> None:

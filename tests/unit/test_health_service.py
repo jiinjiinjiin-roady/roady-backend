@@ -67,7 +67,7 @@ async def test_health_is_degraded_when_optional_services_are_down() -> None:
 
     assert response.status == "DEGRADED"
     assert response.services.database == "UP"
-    assert response.services.vit_model == "DOWN"
+    assert response.services.vit_model == "UP"
     assert response.services.gemini == "DOWN"
     assert response.services.email == "DOWN"
 
@@ -83,14 +83,24 @@ async def test_health_response_serializes_as_camel_case() -> None:
     assert "vitModel" in payload["services"]
 
 
-def test_model_file_availability_uses_file_existence(tmp_path) -> None:
-    missing_settings = make_settings(model_path=str(tmp_path / "missing.pth"))
+async def test_mock_adapter_mode_reports_vit_available_without_model_file(tmp_path) -> None:
+    settings = make_settings(
+        model_path=str(tmp_path / "missing.pth"),
+        driver_monitoring_adapter="MOCK",
+    )
+
+    assert await make_service(settings).is_vit_model_available() is True
+
+
+async def test_real_adapter_mode_reports_vit_unavailable_with_model_file(tmp_path) -> None:
     existing_model = tmp_path / "best_vit.pth"
     existing_model.write_bytes(b"model-placeholder")
-    existing_settings = make_settings(model_path=str(existing_model))
+    settings = make_settings(
+        model_path=str(existing_model),
+        driver_monitoring_adapter="REAL",
+    )
 
-    assert make_service(missing_settings).is_vit_model_available() is False
-    assert make_service(existing_settings).is_vit_model_available() is True
+    assert await make_service(settings).is_vit_model_available() is False
 
 
 def test_gemini_requires_api_key_and_model() -> None:

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Path, WebSocket, status
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
+from app.ai.driver_monitoring import DriverMonitoringAdapter
 from app.api.dependencies import get_current_account, get_settings_dependency, load_current_account
 from app.api.error_handlers import ErrorResponse
 from app.api.v1.endpoints.driving_sessions import get_driver_monitoring_readiness
@@ -16,13 +17,17 @@ from app.core.error_codes import ErrorCode
 from app.core.exceptions import AppException
 from app.core.time import utc_now_for_api_response
 from app.db.session import AsyncSessionLocal
-from app.integrations.driver_monitoring import DriverMonitoringReadiness
+from app.integrations.driver_monitoring import (
+    DriverMonitoringReadiness,
+    create_driver_monitoring_adapter,
+)
 from app.models import Account
 from app.policies.driving_context_policy import DrivingContextPolicy
 from app.realtime.connection_manager import ConnectionManager, ManagedConnection
 from app.realtime.frame_handler import FrameIngressService, FrameIngressStatus
 from app.realtime.frame_pairing import FramePairingController
 from app.realtime.heartbeat import HeartbeatController
+from app.realtime.inference_worker import InferenceWorker
 from app.realtime.protocol import (
     FrameMetaMessage,
     InvalidFrameMetaError,
@@ -52,6 +57,7 @@ DriverMonitoringReadinessDep = Annotated[
     Depends(get_driver_monitoring_readiness),
 ]
 SessionPath = Annotated[str, Path(alias="sessionId")]
+MODEL_NOT_AVAILABLE_MESSAGE = "Driver monitoring model is not available."
 
 PROTOCOL_ERROR_MESSAGE = "현재 지원하지 않는 WebSocket 메시지입니다."
 INTERNAL_ERROR_MESSAGE = "실시간 연결 처리 중 오류가 발생했습니다."
@@ -90,6 +96,16 @@ async def connect_driving_session_websocket(
         await _send_app_denial_response(websocket, exc)
         return
 
+    adapter = _driver_monitoring_adapter(websocket, settings)
+    if not await adapter.is_ready():
+        await _send_denial_response(
+            websocket,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=MODEL_NOT_AVAILABLE_MESSAGE,
+            error_code=ErrorCode.MODEL_NOT_AVAILABLE,
+        )
+        return
+
     connection_manager = _connection_manager(websocket)
     runtime_registry = _runtime_registry(websocket)
     location_update_service = _location_update_service(
@@ -98,6 +114,7 @@ async def connect_driving_session_websocket(
         runtime_registry=runtime_registry,
     )
     heartbeat: HeartbeatController | None = None
+    inference_worker: InferenceWorker | None = None
 
     await websocket.accept()
 
@@ -108,11 +125,18 @@ async def connect_driving_session_websocket(
         frame_queue_max_size=settings.ws_frame_queue_max_size,
         frame_recent_id_cache_size=settings.ws_frame_recent_id_cache_size,
     )
-    await runtime_registry.reset_frame_state(
+    connection_generation = await runtime_registry.prepare_connection(
         parsed_session_id,
         frame_queue_max_size=settings.ws_frame_queue_max_size,
         frame_recent_id_cache_size=settings.ws_frame_recent_id_cache_size,
     )
+    if connection_generation is None:
+        await _send_internal_error_and_close(
+            websocket=websocket,
+            session_id=parsed_session_id,
+            connection_manager=connection_manager,
+        )
+        return
 
     frame_ingress_service = FrameIngressService(
         connection_manager=connection_manager,
@@ -135,6 +159,16 @@ async def connect_driving_session_websocket(
     )
 
     try:
+        inference_worker = InferenceWorker(
+            session_id=parsed_session_id,
+            websocket=websocket,
+            connection_generation=connection_generation,
+            connection_manager=connection_manager,
+            runtime_registry=runtime_registry,
+            adapter=adapter,
+        )
+        inference_worker.start()
+
         await connection_manager.send_json_to_current(
             parsed_session_id,
             websocket,
@@ -180,6 +214,9 @@ async def connect_driving_session_websocket(
         )
     finally:
         await frame_pairing.close()
+
+        if inference_worker is not None:
+            await inference_worker.stop()
 
         if heartbeat is not None:
             await heartbeat.stop()
@@ -595,3 +632,13 @@ def _location_update_service(
         policy=policy,
         persist_interval_ms=settings.ws_location_persist_interval_ms,
     )
+
+
+def _driver_monitoring_adapter(
+    websocket: WebSocket,
+    settings: Settings,
+) -> DriverMonitoringAdapter:
+    factory = getattr(websocket.app.state, "driver_monitoring_adapter_factory", None)
+    if factory is not None:
+        return factory(settings=settings)
+    return create_driver_monitoring_adapter(settings)
