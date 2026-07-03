@@ -19,6 +19,10 @@ from app.realtime.session_runtime import (
     BehaviorRuntimeObserveStatus,
     SessionRuntimeRegistry,
 )
+from app.services.behavior_event_service import (
+    BehaviorEventWriteResult,
+    BehaviorEventWriteStatus,
+)
 
 BASE_TIME = datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
 
@@ -47,6 +51,30 @@ class RecordingPublisher:
         return DetectionPublishResult(status=DetectionPublishStatus.PUBLISHED)
 
 
+class RecordingBehaviorEventService:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[dict[str, Any]] = []
+
+    async def handle_transition(self, **kwargs) -> BehaviorEventWriteResult:
+        if self.fail:
+            raise RuntimeError("behavior event write failed")
+
+        self.calls.append(kwargs)
+        transition = kwargs["transition"]
+        if transition.transition_type == BehaviorTransitionType.CLEARED:
+            return BehaviorEventWriteResult(
+                status=BehaviorEventWriteStatus.CLEARED,
+                behavior_event_id="event-1",
+                behavior_type=BehaviorType.PHONE_USE,
+            )
+        return BehaviorEventWriteResult(
+            status=BehaviorEventWriteStatus.STARTED_CREATED,
+            behavior_event_id="event-1",
+            behavior_type=transition.event_behavior_type,
+        )
+
+
 def detection_result(action_type: ModelActionType, frame_number: int) -> DetectionResult:
     metadata = metadata_from_action_type(action_type)
     captured_at = BASE_TIME + timedelta(milliseconds=frame_number)
@@ -70,6 +98,7 @@ def detection_result(action_type: ModelActionType, frame_number: int) -> Detecti
 async def prepare_pipeline(
     *,
     publisher: RecordingPublisher | DetectionUpdatePublisher | None = None,
+    behavior_event_service: RecordingBehaviorEventService | None = None,
 ) -> tuple[DetectionPipeline, SessionRuntimeRegistry, ConnectionManager, FakeWebSocket]:
     registry = SessionRuntimeRegistry()
     await registry.get_or_create("session-1", connected_at=BASE_TIME)
@@ -90,6 +119,7 @@ async def prepare_pipeline(
         connection_manager=manager,
         runtime_registry=registry,
         detection_publisher=publisher,
+        behavior_event_service=behavior_event_service,
     )
     return pipeline, registry, manager, websocket
 
@@ -149,6 +179,71 @@ async def test_pipeline_records_cleared_transition_without_normal_event_candidat
 
 
 @pytest.mark.asyncio
+async def test_pipeline_calls_behavior_event_service_for_started_and_cleared() -> None:
+    service = RecordingBehaviorEventService()
+    pipeline, _, _, _ = await prepare_pipeline(
+        publisher=RecordingPublisher(),
+        behavior_event_service=service,
+    )
+
+    started_results = [
+        await pipeline.handle_detection_result(
+            detection_result(ModelActionType.WRITING_MSG_RIGHT, frame_number),
+        )
+        for frame_number in [1, 2, 3]
+    ]
+    for frame_number in [4, 5, 6]:
+        cleared_result = await pipeline.handle_detection_result(
+            detection_result(ModelActionType.SAFE_DRIVING, frame_number),
+        )
+
+    assert started_results[-1].behavior_event_write_result is not None
+    assert (
+        started_results[-1].behavior_event_write_result.status
+        == BehaviorEventWriteStatus.STARTED_CREATED
+    )
+    assert cleared_result.behavior_event_write_result is not None
+    assert cleared_result.behavior_event_write_result.status == BehaviorEventWriteStatus.CLEARED
+    assert [call["transition"].transition_type for call in service.calls] == [
+        BehaviorTransitionType.STARTED,
+        BehaviorTransitionType.CLEARED,
+    ]
+    assert service.calls[1]["previous_active_event_behavior_type"] == BehaviorType.PHONE_USE
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_call_behavior_event_service_for_none_or_updated() -> None:
+    service = RecordingBehaviorEventService()
+    pipeline, _, _, _ = await prepare_pipeline(
+        publisher=RecordingPublisher(),
+        behavior_event_service=service,
+    )
+
+    no_transition = await pipeline.handle_detection_result(
+        detection_result(ModelActionType.WRITING_MSG_RIGHT, 1),
+    )
+    for frame_number in [2, 3]:
+        await pipeline.handle_detection_result(
+            detection_result(ModelActionType.WRITING_MSG_RIGHT, frame_number),
+        )
+    for frame_number in [4, 5, 6]:
+        updated = await pipeline.handle_detection_result(
+            detection_result(ModelActionType.GPS_OPERATING, frame_number),
+        )
+
+    assert no_transition.behavior_event_write_result is None
+    assert updated.behavior_observe_result is not None
+    assert updated.behavior_observe_result.transition is not None
+    assert (
+        updated.behavior_observe_result.transition.transition_type
+        == BehaviorTransitionType.UPDATED
+    )
+    assert [call["transition"].transition_type for call in service.calls] == [
+        BehaviorTransitionType.STARTED
+    ]
+
+
+@pytest.mark.asyncio
 async def test_secondary_task_transition_preserves_dominant_model_action() -> None:
     pipeline, registry, _, _ = await prepare_pipeline(publisher=RecordingPublisher())
 
@@ -166,7 +261,11 @@ async def test_secondary_task_transition_preserves_dominant_model_action() -> No
 @pytest.mark.asyncio
 async def test_old_generation_result_does_not_publish_or_update_behavior_state() -> None:
     publisher = RecordingPublisher()
-    pipeline, registry, _, _ = await prepare_pipeline(publisher=publisher)
+    service = RecordingBehaviorEventService()
+    pipeline, registry, _, _ = await prepare_pipeline(
+        publisher=publisher,
+        behavior_event_service=service,
+    )
     await registry.prepare_connection(
         "session-1",
         frame_queue_max_size=2,
@@ -187,6 +286,7 @@ async def test_old_generation_result_does_not_publish_or_update_behavior_state()
     assert behavior is not None
     assert behavior.active_event_behavior_type is None
     assert behavior.policy_sample_count == 0
+    assert service.calls == []
 
 
 @pytest.mark.asyncio
@@ -210,6 +310,29 @@ async def test_non_current_connection_result_does_not_publish_or_update_runtime(
     assert inference.processed_frame_count == 0
     assert behavior is not None
     assert behavior.policy_sample_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_returns_failure_when_behavior_event_service_fails_after_publish() -> None:
+    publisher = RecordingPublisher()
+    service = RecordingBehaviorEventService(fail=True)
+    pipeline, _, _, _ = await prepare_pipeline(
+        publisher=publisher,
+        behavior_event_service=service,
+    )
+
+    for frame_number in [1, 2]:
+        await pipeline.handle_detection_result(
+            detection_result(ModelActionType.WRITING_MSG_RIGHT, frame_number),
+        )
+    result = await pipeline.handle_detection_result(
+        detection_result(ModelActionType.WRITING_MSG_RIGHT, 3),
+    )
+
+    assert result.status == DetectionPipelineStatus.BEHAVIOR_EVALUATION_FAILED
+    assert result.behavior_event_write_result is not None
+    assert result.behavior_event_write_result.status == BehaviorEventWriteStatus.WRITE_FAILED
+    assert [call[2].frame_id for call in publisher.calls] == ["frame-1", "frame-2", "frame-3"]
 
 
 @pytest.mark.asyncio

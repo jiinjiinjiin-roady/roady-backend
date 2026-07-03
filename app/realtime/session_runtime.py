@@ -187,6 +187,7 @@ class BehaviorRuntimeSnapshot:
     last_behavior_transition: BehaviorTransition | None
     active_detection_behavior_type: DetectionBehaviorType | None
     active_event_behavior_type: BehaviorType | None
+    active_behavior_event_id: str | None
     dominant_model_action_type: ModelActionType | None
     active_behavior_started_at: datetime | None
     last_behavior_seen_at: datetime | None
@@ -205,6 +206,8 @@ class BehaviorRuntimeObserveStatus(StrEnum):
 class BehaviorRuntimeObserveResult:
     status: BehaviorRuntimeObserveStatus
     transition: BehaviorTransition | None
+    previous_active_behavior_event_id: str | None = None
+    previous_active_event_behavior_type: BehaviorType | None = None
 
 
 class SessionRuntimeRegistry:
@@ -514,10 +517,14 @@ class SessionRuntimeRegistry:
                     transition=transition,
                 )
 
+            previous_active_behavior_event_id = runtime.active_behavior_event_id
+            previous_active_event_behavior_type = runtime.active_event_behavior_type
             self._record_behavior_transition_locked(runtime, transition)
             return BehaviorRuntimeObserveResult(
                 status=BehaviorRuntimeObserveStatus.TRANSITION_RECORDED,
                 transition=transition,
+                previous_active_behavior_event_id=previous_active_behavior_event_id,
+                previous_active_event_behavior_type=previous_active_event_behavior_type,
             )
 
     async def get_behavior_snapshot(self, session_id: str) -> BehaviorRuntimeSnapshot | None:
@@ -526,6 +533,41 @@ class SessionRuntimeRegistry:
             if runtime is None:
                 return None
             return self._behavior_snapshot(runtime)
+
+    async def record_active_behavior_event(
+        self,
+        session_id: str,
+        *,
+        connection_generation: int,
+        behavior_type: BehaviorType,
+        event_id: str,
+    ) -> bool:
+        async with self._lock:
+            runtime = self._runtimes.get(session_id)
+            if runtime is None or runtime.connection_generation != connection_generation:
+                return False
+            if runtime.active_event_behavior_type != behavior_type:
+                return False
+
+            runtime.active_behavior_event_id = event_id
+            return True
+
+    async def clear_active_behavior_event(
+        self,
+        session_id: str,
+        *,
+        connection_generation: int,
+        event_id: str | None = None,
+    ) -> bool:
+        async with self._lock:
+            runtime = self._runtimes.get(session_id)
+            if runtime is None or runtime.connection_generation != connection_generation:
+                return False
+            if event_id is not None and runtime.active_behavior_event_id not in {None, event_id}:
+                return False
+
+            runtime.active_behavior_event_id = None
+            return True
 
     async def remove(self, session_id: str) -> bool:
         async with self._lock:
@@ -578,6 +620,7 @@ class SessionRuntimeRegistry:
             last_behavior_transition=runtime.last_behavior_transition,
             active_detection_behavior_type=runtime.active_detection_behavior_type,
             active_event_behavior_type=runtime.active_event_behavior_type,
+            active_behavior_event_id=runtime.active_behavior_event_id,
             dominant_model_action_type=runtime.dominant_model_action_type,
             active_behavior_started_at=runtime.active_behavior_started_at,
             last_behavior_seen_at=runtime.last_behavior_seen_at,

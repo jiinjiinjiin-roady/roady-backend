@@ -5,7 +5,7 @@ import pytest
 
 from app.ai.driver_monitoring import DetectionResult, ModelActionType
 from app.ai.prediction_mapper import metadata_from_class_index
-from app.core.enums import DrivingState, LocationSource
+from app.core.enums import BehaviorType, DrivingState, LocationSource
 from app.policies.sliding_window_behavior_policy import BehaviorTransitionType
 from app.realtime.session_runtime import (
     AcceptedFrame,
@@ -399,6 +399,12 @@ async def test_behavior_observation_records_started_and_cleared_state() -> None:
     assert started_snapshot is not None
     assert started_snapshot.active_event_behavior_type is not None
     assert started_snapshot.dominant_model_action_type == ModelActionType.WRITING_MSG_RIGHT
+    assert await registry.record_active_behavior_event(
+        "session-1",
+        connection_generation=generation,
+        behavior_type=BehaviorType.PHONE_USE,
+        event_id="event-1",
+    )
 
     for frame_number in [4, 5]:
         await registry.observe_behavior_result(
@@ -416,9 +422,12 @@ async def test_behavior_observation_records_started_and_cleared_state() -> None:
     assert cleared.status == BehaviorRuntimeObserveStatus.TRANSITION_RECORDED
     assert cleared.transition is not None
     assert cleared.transition.transition_type == BehaviorTransitionType.CLEARED
+    assert cleared.previous_active_behavior_event_id == "event-1"
+    assert cleared.previous_active_event_behavior_type == BehaviorType.PHONE_USE
     assert cleared_snapshot is not None
     assert cleared_snapshot.active_detection_behavior_type is None
     assert cleared_snapshot.active_event_behavior_type is None
+    assert cleared_snapshot.active_behavior_event_id is None
     assert cleared_snapshot.dominant_model_action_type is None
 
 
@@ -450,6 +459,51 @@ async def test_behavior_observation_is_generation_scoped() -> None:
     assert snapshot is not None
     assert snapshot.policy_sample_count == 0
     assert snapshot.active_event_behavior_type is None
+
+
+@pytest.mark.asyncio
+async def test_behavior_event_id_updates_are_generation_scoped() -> None:
+    registry = SessionRuntimeRegistry()
+    runtime = await registry.get_or_create("session-1")
+    generation = await registry.prepare_connection(
+        "session-1",
+        frame_queue_max_size=2,
+        frame_recent_id_cache_size=256,
+    )
+    assert generation is not None
+    runtime.active_event_behavior_type = BehaviorType.PHONE_USE
+
+    recorded = await registry.record_active_behavior_event(
+        "session-1",
+        connection_generation=generation,
+        behavior_type=BehaviorType.PHONE_USE,
+        event_id="event-1",
+    )
+    stale_generation = await registry.prepare_connection(
+        "session-1",
+        frame_queue_max_size=2,
+        frame_recent_id_cache_size=256,
+    )
+    stale_record = await registry.record_active_behavior_event(
+        "session-1",
+        connection_generation=generation,
+        behavior_type=BehaviorType.PHONE_USE,
+        event_id="event-old",
+    )
+    stale_clear = await registry.clear_active_behavior_event(
+        "session-1",
+        connection_generation=generation,
+        event_id="event-1",
+    )
+    snapshot = await registry.get_behavior_snapshot("session-1")
+
+    assert recorded is True
+    assert stale_generation == generation + 1
+    assert stale_record is False
+    assert stale_clear is False
+    assert snapshot is not None
+    assert snapshot.connection_generation == stale_generation
+    assert snapshot.active_behavior_event_id is None
 
 
 @pytest.mark.asyncio

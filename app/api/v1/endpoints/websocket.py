@@ -42,6 +42,7 @@ from app.realtime.protocol import (
     parse_client_text_message,
 )
 from app.realtime.session_runtime import SessionRuntimeRegistry
+from app.services.behavior_event_service import BehaviorEventService
 from app.services.location_update_service import (
     LocationUpdateResultStatus,
     LocationUpdateService,
@@ -134,6 +135,10 @@ async def connect_driving_session_websocket(
         max_frame_bytes=settings.ws_max_frame_bytes,
     )
     detection_publisher = DetectionUpdatePublisher(connection_manager=connection_manager)
+    behavior_event_service = _behavior_event_service(
+        websocket=websocket,
+        runtime_registry=runtime_registry,
+    )
     detection_pipeline = DetectionPipeline(
         session_id=parsed_session_id,
         websocket=websocket,
@@ -141,6 +146,7 @@ async def connect_driving_session_websocket(
         connection_manager=connection_manager,
         runtime_registry=runtime_registry,
         detection_publisher=detection_publisher,
+        behavior_event_service=behavior_event_service,
     )
 
     async def send_frame_timeout_error(_: FrameMetaMessage) -> None:
@@ -632,3 +638,15 @@ def _location_update_service(
         policy=policy,
         persist_interval_ms=settings.ws_location_persist_interval_ms,
     )
+
+
+def _behavior_event_service(
+    *,
+    websocket: WebSocket,
+    runtime_registry: SessionRuntimeRegistry,
+) -> BehaviorEventService:
+    factory = getattr(websocket.app.state, "behavior_event_service_factory", None)
+    if factory is not None:
+        return factory(runtime_registry=runtime_registry)
+
+    return BehaviorEventService(runtime_registry=runtime_registry)

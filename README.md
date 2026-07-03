@@ -61,6 +61,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
   - connection-scoped inference worker consuming the latest-frame queue through the app-scoped deterministic Mock ViT adapter
   - internal `DetectionResult` state with 3MDAD raw model action fields, inference latency, processed-frame count, and failure count
   - internal `DetectionPipeline` connecting successful detection results to runtime Sliding Window behavior state
+  - internal BehaviorEvent writer persisting Sliding Window STARTED/CLEARED transitions to `behavior_events`
   - `DETECTION_UPDATE` publishing with `behaviorType`, `modelActionType`, `modelClassCode`, and `modelClassLabel` for successful inference results on the current WebSocket connection
 - REST 3-6 integration, regression, and OpenAPI contract verification
 - Docker Compose stack for backend and MySQL
@@ -73,7 +74,7 @@ Do not use `Base.metadata.create_all()` for application schema management.
 - Search History creation REST API
 - Agent messages, Gemini handling, ToolExecution handling, and Report Export APIs
 - Real ViT inference and Agent utterance handling
-- JPEG decode/preprocessing, behavior event writer, risk policy, and interventions
+- JPEG decode/preprocessing, risk policy, and interventions
 - Gemini calls, email delivery, and report file generation
 
 The default admin account is only seed data for early development. It is not a
