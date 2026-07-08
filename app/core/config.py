@@ -49,7 +49,7 @@ def parse_cors_origins(raw_value: str | Iterable[str] | None) -> list[str]:
 
 class Settings(BaseSettings):
     app_env: str = "development"
-    app_name: str = "driving-agent-api"
+    app_name: str = "roadie-api"
     api_v1_prefix: str = "/api/v1"
     ws_v1_prefix: str = "/ws/v1"
     log_level: str = "INFO"
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     mysql_host: str = "mysql"
     mysql_port: int = 3306
-    mysql_database: str = "driving_agent"
+    mysql_database: str = "roadie"
     mysql_user: str = "driving_user"
     mysql_password: str = Field(default="", repr=False)
     mysql_root_password: str = Field(default="", repr=False)

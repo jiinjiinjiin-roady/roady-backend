@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-driving_agent}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-roadie}
       MYSQL_USER: ${MYSQL_USER:-driving_user}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-driving}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root}

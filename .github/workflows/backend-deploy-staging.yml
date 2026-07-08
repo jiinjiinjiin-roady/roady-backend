@@ -93,19 +93,19 @@ jobs:
           STAGING_DEPLOY_PATH: ${{ vars.STAGING_DEPLOY_PATH }}
         run: |
           set -Eeuo pipefail
-          tar -czf /tmp/driving-agent-staging-deploy.tgz -C deploy/staging .
+          tar -czf /tmp/roadie-staging-deploy.tgz -C deploy/staging .
           scp \
             -i ~/.ssh/staging \
             -o UserKnownHostsFile=~/.ssh/known_hosts \
             -o StrictHostKeyChecking=yes \
-            /tmp/driving-agent-staging-deploy.tgz \
-            "${STAGING_SSH_USER}@${STAGING_SSH_HOST}:/tmp/driving-agent-staging-deploy.tgz"
+            /tmp/roadie-staging-deploy.tgz \
+            "${STAGING_SSH_USER}@${STAGING_SSH_HOST}:/tmp/roadie-staging-deploy.tgz"
           ssh \
             -i ~/.ssh/staging \
             -o UserKnownHostsFile=~/.ssh/known_hosts \
             -o StrictHostKeyChecking=yes \
             "${STAGING_SSH_USER}@${STAGING_SSH_HOST}" \
-            "mkdir -p '${STAGING_DEPLOY_PATH}' && tar -xzf /tmp/driving-agent-staging-deploy.tgz -C '${STAGING_DEPLOY_PATH}' && rm -f /tmp/driving-agent-staging-deploy.tgz && chmod +x '${STAGING_DEPLOY_PATH}'/*.sh"
+            "mkdir -p '${STAGING_DEPLOY_PATH}' && tar -xzf /tmp/roadie-staging-deploy.tgz -C '${STAGING_DEPLOY_PATH}' && rm -f /tmp/roadie-staging-deploy.tgz && chmod +x '${STAGING_DEPLOY_PATH}'/*.sh"
 
       - name: Run remote deploy
         shell: bash

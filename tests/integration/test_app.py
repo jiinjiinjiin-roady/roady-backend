@@ -56,7 +56,7 @@ def get_test_health_service() -> HealthService:
 def test_create_app_succeeds() -> None:
     app = create_app()
 
-    assert app.title == "driving-agent-api"
+    assert app.title == "roadie-api"
 
 
 async def test_openapi_json_is_available(client) -> None:

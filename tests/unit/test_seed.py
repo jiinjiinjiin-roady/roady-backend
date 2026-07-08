@@ -149,7 +149,7 @@ async def test_seed_creates_default_family_profiles_for_empty_account() -> None:
 
     assert result == 3
     assert [profile.display_name for profile in session.profiles] == ["아빠", "엄마", "지우"]
-    assert [profile.agent_call_name for profile in session.profiles] == ["나비", "나비", "나비"]
+    assert [profile.agent_call_name for profile in session.profiles] == ["로디", "로디", "로디"]
     assert [profile.profile_image_url for profile in session.profiles] == [
         profile["profile_image_url"] for profile in DEFAULT_FAMILY_PROFILES
     ]
@@ -162,7 +162,7 @@ async def test_seed_creates_default_navigation_labels_for_profiles() -> None:
         id="profile-1",
         account_id="00000000-0000-0000-0000-000000000001",
         display_name="아빠",
-        agent_call_name="나비",
+        agent_call_name="로디",
     )
 
     result = await seed_default_navigation_labels(session, [profile])
@@ -181,7 +181,7 @@ async def test_seed_skips_default_navigation_labels_when_profile_has_places() ->
         id="profile-1",
         account_id="00000000-0000-0000-0000-000000000001",
         display_name="아빠",
-        agent_call_name="나비",
+        agent_call_name="로디",
     )
     session.saved_places.append(
         SavedPlace(
@@ -208,7 +208,7 @@ async def test_seed_skips_default_family_profiles_when_account_already_has_profi
         DriverProfile(
             account_id="00000000-0000-0000-0000-000000000001",
             display_name="기존 운전자",
-            agent_call_name="나비",
+            agent_call_name="로디",
         )
     )
 

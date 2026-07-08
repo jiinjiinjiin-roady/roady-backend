@@ -20,17 +20,17 @@ DEFAULT_FAMILY_PROFILE_IMAGE_BASE_URL = "/storage/profile-images/default-family"
 DEFAULT_FAMILY_PROFILES = (
     {
         "display_name": "아빠",
-        "agent_call_name": "나비",
+        "agent_call_name": "로디",
         "profile_image_url": f"{DEFAULT_FAMILY_PROFILE_IMAGE_BASE_URL}/father.svg",
     },
     {
         "display_name": "엄마",
-        "agent_call_name": "나비",
+        "agent_call_name": "로디",
         "profile_image_url": f"{DEFAULT_FAMILY_PROFILE_IMAGE_BASE_URL}/mother.svg",
     },
     {
         "display_name": "지우",
-        "agent_call_name": "나비",
+        "agent_call_name": "로디",
         "profile_image_url": f"{DEFAULT_FAMILY_PROFILE_IMAGE_BASE_URL}/child.svg",
     },
 )

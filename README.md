@@ -1,6 +1,10 @@
-# JIIN backend
+# ROADIE backend
 
-FastAPI backend for the JIIN driver-assistance navigation project.
+FastAPI backend for the ROADIE driver-assistance navigation project.
+
+## Naming
+
+The product and navigation assistant are named `로디`. Use `ROADIE` in English-facing documentation and `roadie` for lowercase package names, environment defaults, database defaults, and technical identifiers.
 
 The backend is the primary service for the navigation product. It supports profiles, saved places, search histories, driving sessions, WebSocket driver-monitoring runtime, report reads, and the TMAP proxy APIs used by the `navigation` frontend.
 

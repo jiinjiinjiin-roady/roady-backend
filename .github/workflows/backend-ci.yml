@@ -33,7 +33,7 @@ jobs:
           set -Eeuo pipefail
           cat > .env <<'ENV'
           APP_ENV=ci
-          APP_NAME=driving-agent-api
+          APP_NAME=roadie-api
           API_V1_PREFIX=/api/v1
           WS_V1_PREFIX=/ws/v1
           LOG_LEVEL=INFO
@@ -45,7 +45,7 @@ jobs:
 
           MYSQL_HOST=mysql
           MYSQL_PORT=3306
-          MYSQL_DATABASE=driving_agent
+          MYSQL_DATABASE=roadie
           MYSQL_USER=driving_user
           MYSQL_PASSWORD=ci-driving-password
           MYSQL_ROOT_PASSWORD=ci-root-password
@@ -128,7 +128,7 @@ jobs:
       - name: Compile app
         run: docker compose exec -T backend python -X pycache_prefix=/tmp/pycache -m compileall app
       - name: Standalone Docker image build
-        run: docker build -t driving-agent-backend-ci:${{ github.sha }} -f Dockerfile .
+        run: docker build -t roadie-backend-ci:${{ github.sha }} -f Dockerfile .
 
       - name: Compose logs on failure
         if: failure()
