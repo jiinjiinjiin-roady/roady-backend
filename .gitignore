@@ -13,6 +13,7 @@ artifacts/*
 !artifacts/models/
 artifacts/models/*
 !artifacts/models/best_vit.pth
+!artifacts/models/best_ViT_kaggle_rgb2_4cls.pth
 storage/**/*.pdf
 storage/reports/*
 !storage/reports/.gitkeep
