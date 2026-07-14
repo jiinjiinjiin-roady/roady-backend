@@ -37,6 +37,8 @@ EXPECTED_REST_OPERATIONS = {
     ("GET", "/api/v1/profiles/{profileId}/reports/sessions"),
     ("GET", "/api/v1/music/recommendations"),
     ("POST", "/api/v1/voice/tts"),
+    ("POST", "/api/v1/manual-risk/voice/transcriptions"),
+    ("POST", "/api/v1/manual-risk/voice/matches"),
 }
 
 FORBIDDEN_REST_OPERATIONS = {
@@ -71,6 +73,8 @@ EXPECTED_SUCCESS_RESPONSES = {
     ("GET", "/api/v1/profiles/{profileId}/reports/sessions"): {"200"},
     ("GET", "/api/v1/music/recommendations"): {"200"},
     ("POST", "/api/v1/voice/tts"): {"200"},
+    ("POST", "/api/v1/manual-risk/voice/transcriptions"): {"200"},
+    ("POST", "/api/v1/manual-risk/voice/matches"): {"200"},
 }
 
 
@@ -85,7 +89,7 @@ def test_openapi_exposes_only_current_rest_operation_matrix() -> None:
     }
 
     assert actual_operations == EXPECTED_REST_OPERATIONS
-    assert len(actual_operations) == 31
+    assert len(actual_operations) == 33
     assert not (actual_operations & FORBIDDEN_REST_OPERATIONS)
     assert all(path.startswith("/api/v1/") for _, path in actual_operations)
     assert all(not path.startswith("/api/v1/api/v1/") for _, path in actual_operations)

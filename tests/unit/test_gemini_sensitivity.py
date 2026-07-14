@@ -51,9 +51,12 @@ def test_gemini_prompt_example_uses_a_syntactically_valid_json_object() -> None:
     prompt = json.loads(prompt_line.split("=", 1)[1])
     example_json = prompt.rsplit(": ", 1)[1]
 
+    assert "숫자가 클수록 더 민감하고 더 이른 경고" in prompt
+    assert "clickCount와 level이 높을수록 해당 행동의 민감도 숫자를 높이세요" in prompt
+    assert "telemetryEvents에 근거가 없는 행동 유형" in prompt
     assert json.loads(example_json) == {
         "behaviorWarningSensitivity": {
-            behavior.value: 8 for behavior in BehaviorType
+            behavior.value: 5 for behavior in BehaviorType
         }
     }
 
