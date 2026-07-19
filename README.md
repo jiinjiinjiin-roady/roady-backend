@@ -227,6 +227,8 @@ Invoke-RestMethod `
 
 `behaviorWarningSensitivity` values are integers from 3 to 10. Values `4` and
 below are treated as low-sensitivity settings by the navigation UI.
+Automatic drive-summary personalization uses the gradual update formula in
+`docs/behavior-sensitivity-personalization-policy.md`.
 `warningSensitivity` and `theme` remain accepted and returned for compatibility,
 but the navigation frontend no longer exposes global sensitivity or theme
 controls.
