@@ -1,6 +1,9 @@
 from collections.abc import Mapping
 
+import httpx
+
 from app.integrations.itunes import ItunesSearchClient, as_mapping
+from app.policies.demo_fallback_policy import fallback_music_recommendations
 
 MOOD_SEARCH_TERMS = {
     "bright": "bright pop",
@@ -25,18 +28,24 @@ class MusicRecommendationService:
         limit: int,
     ) -> list[dict[str, object]]:
         term = get_search_term(mood=mood, keyword=keyword)
-        response = await self._client.search_tracks(term, clamp_limit(limit))
+        safe_limit = clamp_limit(limit)
+        try:
+            response = await self._client.search_tracks(term, safe_limit)
+        except (httpx.HTTPError, ValueError):
+            return fallback_music_recommendations(mood=mood, limit=safe_limit)
+
         data = as_mapping(response)
         results = data.get("results")
 
         if not isinstance(results, list):
-            return []
+            return fallback_music_recommendations(mood=mood, limit=safe_limit)
 
-        return [
+        tracks = [
             track
             for item in results
             if (track := normalize_itunes_track(item)) is not None
         ]
+        return tracks or fallback_music_recommendations(mood=mood, limit=safe_limit)
 
 
 def get_search_term(*, mood: str, keyword: str) -> str:

@@ -15,6 +15,7 @@ from app.integrations.gemini.behavior_sensitivity import (
 )
 from app.integrations.storage.local import LocalStorageAdapter, StorageDeleteError
 from app.models import Account, DriverProfile
+from app.policies.demo_fallback_policy import fallback_behavior_warning_sensitivity
 from app.repositories.account_repository import AccountRepository
 from app.repositories.driving_session_repository import DrivingSessionRepository
 from app.repositories.profile_repository import ProfileRepository
@@ -191,18 +192,22 @@ class ProfileService:
         ]
         try:
             sensitivity = await self.gemini_client.recommend(telemetry_events)
-        except GeminiNotConfiguredError as exc:
-            raise AppException(
-                "Gemini 민감도 분석 설정이 완료되지 않았습니다.",
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                error_code=ErrorCode.GEMINI_BEHAVIOR_SENSITIVITY_NOT_CONFIGURED,
-            ) from exc
+        except GeminiNotConfiguredError:
+            logger.info("Using behavior sensitivity fallback reason=gemini_not_configured")
+            sensitivity = fallback_behavior_warning_sensitivity(
+                current=original_sensitivity,
+                telemetry_events=telemetry_events,
+            )
         except GeminiProviderError as exc:
-            raise AppException(
-                "Gemini 민감도 분석에 실패했습니다.",
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                error_code=ErrorCode.GEMINI_BEHAVIOR_SENSITIVITY_FAILED,
-            ) from exc
+            logger.info(
+                "Using behavior sensitivity fallback reason=gemini_provider_error "
+                "provider_reason=%s",
+                exc.reason,
+            )
+            sensitivity = fallback_behavior_warning_sensitivity(
+                current=original_sensitivity,
+                telemetry_events=telemetry_events,
+            )
 
         try:
             locked_profile = await self.profile_repository.get_by_account_for_update_current(

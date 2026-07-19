@@ -56,7 +56,7 @@ def test_gemini_prompt_is_omitted_from_env_example() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recommendation_requires_key_model_and_env_prompt_without_fallback() -> None:
+async def test_recommendation_client_requires_key_model_and_env_prompt() -> None:
     client = GeminiBehaviorSensitivityClient(
         settings=make_settings(gemini_behavior_sensitivity_prompt="")
     )
@@ -506,33 +506,72 @@ def test_smooth_behavior_warning_sensitivity_moves_one_step_when_rounding_to_zer
 
 
 @pytest.mark.asyncio
-async def test_drive_summary_does_not_persist_when_gemini_rejects_the_response() -> None:
+async def test_drive_summary_persists_rule_based_backend_fallback_when_gemini_rejects() -> None:
+    profile = SimpleNamespace(
+        id="profile-id",
+        account_id="account-id",
+        display_name="운전자",
+        agent_call_name="로디",
+        profile_image_url=None,
+        report_email=None,
+        agent_personality="FRIENDLY",
+        warning_sensitivity="MEDIUM",
+        behavior_warning_sensitivity=DEFAULT_BEHAVIOR_WARNING_SENSITIVITY.copy(),
+        tts_voice_id=None,
+        tts_speed=Decimal("1.00"),
+        guidance_volume=70,
+        theme="SYSTEM",
+        last_used_at=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
     class FakeProfileRepository:
         async def get_by_account(self, _: str, __: str):
-            return SimpleNamespace(
-                behavior_warning_sensitivity=DEFAULT_BEHAVIOR_WARNING_SENSITIVITY.copy()
-            )
+            return profile
 
-        async def get_by_account_for_update(self, _: str, __: str):
-            raise AssertionError("Gemini failure must not reach the persistence path.")
+        async def get_by_account_for_update_current(self, _: str, __: str):
+            return profile
+
+    class FakeSession:
+        commits = 0
+
+        async def flush(self) -> None:
+            return None
+
+        async def refresh(self, _: object) -> None:
+            return None
+
+        async def commit(self) -> None:
+            self.commits += 1
+
+        async def rollback(self) -> None:
+            return None
 
     class FakeGeminiClient:
         async def recommend(self, _: list[dict[str, object]]) -> dict[str, int]:
             raise GeminiProviderError("invalid response")
 
     service = ProfileService.__new__(ProfileService)
+    service.session = FakeSession()
     service.profile_repository = FakeProfileRepository()
     service.gemini_client = FakeGeminiClient()
 
-    with pytest.raises(AppException) as exc_info:
-        await service.update_behavior_warning_sensitivity_from_drive_summary(
-            SimpleNamespace(id="account-id"),
-            "profile-id",
-            DriveSummaryRequest(telemetryEvents=telemetry_events()),
-        )
+    response = await service.update_behavior_warning_sensitivity_from_drive_summary(
+        SimpleNamespace(id="account-id"),
+        "profile-id",
+        DriveSummaryRequest(telemetryEvents=telemetry_events()),
+    )
 
-    assert exc_info.value.status_code == 502
-    assert exc_info.value.error_code == "GEMINI_BEHAVIOR_SENSITIVITY_FAILED"
+    expected_sensitivity = {
+        **DEFAULT_BEHAVIOR_WARNING_SENSITIVITY,
+        "DROWSINESS": 10,
+        "FOOD_OR_DRINK": 6,
+        "SECONDARY_TASK": 8,
+    }
+    assert profile.behavior_warning_sensitivity == expected_sensitivity
+    assert response.behavior_warning_sensitivity == expected_sensitivity
+    assert service.session.commits == 1
 
 
 @pytest.mark.asyncio

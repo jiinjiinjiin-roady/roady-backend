@@ -1,3 +1,5 @@
+import httpx
+
 from app.services.music_recommendation_service import MusicRecommendationService
 
 
@@ -24,6 +26,16 @@ class FakeMusicClient:
                 },
             ]
         }
+
+
+class FailingMusicClient:
+    async def search_tracks(self, term: str, limit: int) -> object:
+        raise httpx.ReadTimeout("timeout")
+
+
+class EmptyMusicClient:
+    async def search_tracks(self, term: str, limit: int) -> object:
+        return {"results": []}
 
 
 async def test_search_recommendations_maps_itunes_tracks_for_navigation_ui() -> None:
@@ -55,3 +67,41 @@ async def test_search_recommendations_uses_keyword_before_mood() -> None:
     await service.search_recommendations(mood="bright", keyword="city night", limit=3)
 
     assert client.searches == [("city night", 3)]
+
+
+async def test_search_recommendations_returns_backend_fallback_when_itunes_fails() -> None:
+    service = MusicRecommendationService(client=FailingMusicClient())  # type: ignore[arg-type]
+
+    tracks = await service.search_recommendations(mood="bright", keyword="", limit=10)
+
+    assert tracks[0] == {
+        "id": "demo-fallback-bright-road",
+        "title": "Bright Road",
+        "artist": "Roady Session",
+        "album": "Wake Drive",
+        "duration": "2:58",
+        "durationSeconds": 178,
+        "coverUrl": None,
+        "sourceUrl": "",
+        "provider": "demo-fallback",
+    }
+
+
+async def test_search_recommendations_returns_backend_fallback_for_empty_itunes_results() -> None:
+    service = MusicRecommendationService(client=EmptyMusicClient())  # type: ignore[arg-type]
+
+    tracks = await service.search_recommendations(mood="drive", keyword="", limit=1)
+
+    assert tracks == [
+        {
+            "id": "demo-fallback-drive-neon",
+            "title": "Drive Neon",
+            "artist": "Roady Session",
+            "album": "City Pulse",
+            "duration": "3:24",
+            "durationSeconds": 204,
+            "coverUrl": None,
+            "sourceUrl": "",
+            "provider": "demo-fallback",
+        }
+    ]

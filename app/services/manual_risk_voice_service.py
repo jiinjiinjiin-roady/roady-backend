@@ -1,6 +1,11 @@
 from collections.abc import Sequence
 
-from app.integrations.gemini.manual_risk_voice import GeminiManualRiskVoiceClient
+from app.integrations.gemini.manual_risk_voice import (
+    GeminiManualRiskVoiceClient,
+    GeminiNotConfiguredError,
+    GeminiProviderError,
+)
+from app.policies.demo_fallback_policy import fallback_manual_risk_option_id
 from app.schemas.manual_risk_voice import ManualRiskVoiceOption
 
 
@@ -14,7 +19,14 @@ class ManualRiskVoiceService:
     async def match(
         self, *, transcript: str, options: Sequence[ManualRiskVoiceOption]
     ) -> str | None:
-        return await self._gemini_client.match(
-            transcript=transcript,
-            options=[option.model_dump() for option in options],
-        )
+        option_payload = [option.model_dump() for option in options]
+        try:
+            return await self._gemini_client.match(
+                transcript=transcript,
+                options=option_payload,
+            )
+        except (GeminiNotConfiguredError, GeminiProviderError):
+            return fallback_manual_risk_option_id(
+                transcript=transcript,
+                options=option_payload,
+            )
