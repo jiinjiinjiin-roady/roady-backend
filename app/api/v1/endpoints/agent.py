@@ -14,6 +14,8 @@ from app.schemas.agent import (
     AgentDriverResponseCreateResponse,
     AgentInterventionPlanRequest,
     AgentInterventionPlanResponse,
+    ToolExecutionDecisionRequest,
+    ToolExecutionDecisionResponse,
 )
 from app.services.agent_conversation_service import AgentConversationService
 from app.services.agent_runtime_service import AgentRuntimeService
@@ -24,6 +26,7 @@ router = APIRouter(tags=["agent"])
 ConversationPath = Annotated[str, Path(alias="conversationId")]
 BehaviorEventPath = Annotated[str, Path(alias="behaviorEventId")]
 InterventionPath = Annotated[str, Path(alias="interventionId")]
+ToolExecutionPath = Annotated[str, Path(alias="toolExecutionId")]
 
 
 def get_agent_conversation_service(session: DbSession) -> AgentConversationService:
@@ -74,6 +77,17 @@ def parse_intervention_id(intervention_id: str) -> str:
     except ValueError as exc:
         raise AppException(
             "개입 ID 형식이 올바르지 않습니다.",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            error_code=ErrorCode.VALIDATION_ERROR,
+        ) from exc
+
+
+def parse_tool_execution_id(tool_execution_id: str) -> str:
+    try:
+        return normalize_uuid_string(tool_execution_id)
+    except ValueError as exc:
+        raise AppException(
+            "Tool 실행 ID 형식이 올바르지 않습니다.",
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             error_code=ErrorCode.VALIDATION_ERROR,
         ) from exc
@@ -171,4 +185,27 @@ async def record_agent_driver_response(
         account_id=current_account.id,
         intervention_id=parse_intervention_id(intervention_id),
         request=request,
+    )
+
+
+@router.post(
+    "/agent/tool-executions/{toolExecutionId}/decision",
+    response_model=ToolExecutionDecisionResponse,
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def decide_agent_tool_execution(
+    tool_execution_id: ToolExecutionPath,
+    request: ToolExecutionDecisionRequest,
+    current_account: CurrentAccount,
+    service: AgentRuntimeServiceDep,
+) -> ToolExecutionDecisionResponse:
+    return await service.decide_tool_execution(
+        account_id=current_account.id,
+        tool_execution_id=parse_tool_execution_id(tool_execution_id),
+        decision=request.decision,
     )

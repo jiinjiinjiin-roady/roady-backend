@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import BehaviorEventStatus, BehaviorResolutionReason
@@ -53,6 +53,26 @@ class BehaviorEventRepository:
             .with_for_update()
         )
         return list(result.scalars().all())
+
+    async def count_recent_by_session_and_type(
+        self,
+        *,
+        session_id: str,
+        behavior_type: str,
+        started_after: datetime,
+        started_before: datetime,
+    ) -> int:
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(BehaviorEvent)
+            .where(
+                BehaviorEvent.session_id == session_id,
+                BehaviorEvent.behavior_type == behavior_type,
+                BehaviorEvent.started_at >= started_after,
+                BehaviorEvent.started_at < started_before,
+            )
+        )
+        return int(result.scalar_one() or 0)
 
     def add(self, event: BehaviorEvent) -> None:
         self.session.add(event)

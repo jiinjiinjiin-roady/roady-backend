@@ -32,6 +32,23 @@ class AgentReplyPlan:
     tool: ToolPlan | None = None
 
 
+ALLOWED_TOOL_NAMES = {
+    "music.play",
+    "message.prepare",
+    "place.search",
+    "route.review",
+}
+REQUIRES_CONFIRMATION_TOOL_NAMES = {"message.prepare"}
+ALLOWED_REPLY_INTENTS = {
+    "PLAY_MUSIC",
+    "SEND_MESSAGE",
+    "SEARCH_PLACE",
+    "UPDATE_ROUTE",
+    "SAFE_ASSISTANT_FALLBACK",
+    "SAFETY_INTERVENTION",
+}
+
+
 BEHAVIOR_TEXT: dict[str, tuple[str, str]] = {
     BehaviorType.DROWSINESS.value: (
         "졸음 징후가 감지됐습니다. 잠시 환기하고 가까운 휴식 지점을 확인해 주세요.",
@@ -162,3 +179,48 @@ def plan_agent_reply(*, text: str) -> AgentReplyPlan:
         intent="SAFE_ASSISTANT_FALLBACK",
         text="운전 중에는 안전과 주행 보조에 필요한 요청을 우선 도와드릴게요.",
     )
+
+
+def validate_agent_reply_plan(plan: AgentReplyPlan) -> AgentReplyPlan:
+    text = plan.text.strip()
+    intent = plan.intent.strip()
+    if intent not in ALLOWED_REPLY_INTENTS:
+        raise ValueError("Agent reply intent is not allowed.")
+    if not 1 <= len(text) <= 180:
+        raise ValueError("Agent reply text length is invalid.")
+    if plan.tool is None:
+        return AgentReplyPlan(intent=intent, text=text)
+
+    tool = plan.tool
+    tool_name = tool.tool_name.strip()
+    if tool_name not in ALLOWED_TOOL_NAMES:
+        raise ValueError("Agent reply tool is not allowed.")
+    confirmation_required = tool.confirmation_required
+    if tool_name in REQUIRES_CONFIRMATION_TOOL_NAMES and not confirmation_required:
+        raise ValueError("Agent reply tool requires confirmation.")
+    if tool_name not in REQUIRES_CONFIRMATION_TOOL_NAMES and confirmation_required:
+        raise ValueError("Agent reply tool confirmation policy is invalid.")
+    if tool_name == "message.prepare" and tool.result is not None:
+        raise ValueError("Pending message tool must not include an execution result.")
+
+    return AgentReplyPlan(
+        intent=intent,
+        text=text,
+        tool=ToolPlan(
+            tool_name=tool_name,
+            arguments=tool.arguments,
+            result=tool.result,
+            confirmation_required=confirmation_required,
+            intent=intent,
+        ),
+    )
+
+
+def validate_safety_guidance_text(*, speech_text: str, ui_text: str) -> tuple[str, str]:
+    normalized_speech = speech_text.strip()
+    normalized_ui = ui_text.strip()
+    if not 1 <= len(normalized_speech) <= 180:
+        raise ValueError("Safety guidance speech text length is invalid.")
+    if not 1 <= len(normalized_ui) <= 80:
+        raise ValueError("Safety guidance UI text length is invalid.")
+    return normalized_speech, normalized_ui

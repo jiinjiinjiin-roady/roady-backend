@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -15,6 +15,7 @@ from app.core.enums import BehaviorResolutionReason, BehaviorType, DrivingState
 from app.core.time import ensure_utc_datetime, utc_now_for_mysql_datetime
 from app.db.session import AsyncSessionLocal
 from app.models import BehaviorEvent
+from app.policies.behavior_risk_policy import BehaviorRiskInput, calculate_behavior_risk_level
 from app.policies.sliding_window_behavior_policy import (
     BehaviorTransition,
     BehaviorTransitionType,
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 DECIMAL_CENT = Decimal("0.01")
 DECIMAL_BASIS_POINT = Decimal("0.0001")
+RECURRENCE_LOOKBACK_MINUTES = 10
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 RepositoryFactory = Callable[[AsyncSession], BehaviorEventRepository]
@@ -207,12 +209,19 @@ class BehaviorEventService:
                 behavior_type=behavior_type,
             )
 
+        recurrence_count = await repository.count_recent_by_session_and_type(
+            session_id=session_id,
+            behavior_type=behavior_type.value,
+            started_after=started_at - timedelta(minutes=RECURRENCE_LOOKBACK_MINUTES),
+            started_before=started_at,
+        )
         event = self._build_behavior_event(
             session_id=session_id,
             behavior_type=behavior_type,
             transition=transition,
             started_at=started_at,
             location_snapshot=location_snapshot,
+            recurrence_count=recurrence_count,
         )
         repository.add(event)
         return BehaviorEventWriteResult(
@@ -265,6 +274,7 @@ class BehaviorEventService:
         transition: BehaviorTransition,
         started_at: datetime,
         location_snapshot: LocationRuntimeSnapshot | None,
+        recurrence_count: int,
     ) -> BehaviorEvent:
         average_confidence = (
             transition.average_confidence
@@ -299,16 +309,28 @@ class BehaviorEventService:
             if location_snapshot is None
             else cls._decimal_or_none(location_snapshot.current_speed_kph, DECIMAL_CENT)
         )
+        normalized_average_confidence = cls._decimal_or_none(
+            average_confidence,
+            DECIMAL_BASIS_POINT,
+        )
+        if normalized_average_confidence is None:
+            raise ValueError("STARTED behavior transition must include confidence values.")
+        risk_level = calculate_behavior_risk_level(
+            BehaviorRiskInput(
+                behavior_type=behavior_type.value,
+                average_confidence=normalized_average_confidence,
+                driving_state=driving_state,
+                speed_kph=speed_kph,
+                recurrence_count=recurrence_count,
+            )
+        )
 
         return BehaviorEvent(
             id=generate_uuid4(),
             session_id=session_id,
             behavior_type=behavior_type.value,
             started_at=started_at,
-            average_confidence=cls._decimal_or_none(
-                average_confidence,
-                DECIMAL_BASIS_POINT,
-            ),
+            average_confidence=normalized_average_confidence,
             maximum_confidence=cls._decimal_or_none(
                 maximum_confidence,
                 DECIMAL_BASIS_POINT,
@@ -317,7 +339,8 @@ class BehaviorEventService:
             speed_kph=speed_kph,
             latitude=latitude,
             longitude=longitude,
-            risk_level=0,
+            risk_level=risk_level,
+            recurrence_count=recurrence_count,
         )
 
     @classmethod

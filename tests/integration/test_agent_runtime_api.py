@@ -212,6 +212,64 @@ async def test_conversation_message_uses_backend_fallback_and_records_tool(app, 
         await dispose_engine()
 
 
+async def test_tool_execution_decision_accepts_pending_tool(app, client) -> None:
+    account, driving_session, _ = await seed_runtime_graph("agent-tool")
+    conversation = make_conversation(driving_session.id)
+    message = AgentMessage(
+        id=str(uuid4()),
+        conversation_id=conversation.id,
+        sequence_no=1,
+        role="AGENT",
+        text="메시지 전송은 확인이 필요합니다.",
+        intent="SEND_MESSAGE",
+        input_type="SYSTEM_EVENT",
+        created_at=BASE_TIME,
+    )
+    tool_execution = ToolExecution(
+        id=str(uuid4()),
+        message_id=message.id,
+        tool_name="message.prepare",
+        arguments_json={"channel": "sms"},
+        result_json=None,
+        confirmation_required=True,
+        confirmation_status="PENDING",
+        execution_status="PENDING",
+        is_simulated=True,
+        created_at=BASE_TIME,
+    )
+
+    async with AsyncSessionLocal() as session:
+        session.add(conversation)
+        await session.flush()
+        session.add(message)
+        await session.flush()
+        session.add(tool_execution)
+        await session.commit()
+
+    override_current_account(app, account)
+
+    try:
+        response = await client.post(
+            f"/api/v1/agent/tool-executions/{tool_execution.id}/decision",
+            json={"decision": "ACCEPT"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()["toolExecution"]
+        assert payload["id"] == tool_execution.id
+        assert payload["confirmationStatus"] == "ACCEPTED"
+        assert payload["executionStatus"] == "SUCCEEDED"
+        assert payload["resultJson"] == {
+            "status": "READY",
+            "executionMode": "SIMULATED",
+            "approved": True,
+        }
+    finally:
+        app.dependency_overrides.clear()
+        await delete_test_accounts(account.id)
+        await dispose_engine()
+
+
 async def test_driver_response_records_result_and_resolves_intervention(app, client) -> None:
     account, _, behavior_event = await seed_runtime_graph("agent-response")
     intervention = make_intervention(behavior_event.id)

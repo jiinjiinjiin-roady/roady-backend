@@ -113,6 +113,22 @@ class AgentConversationMessageCreateResponse(ApiBaseModel):
     tool_execution: ToolExecutionResponse | None = None
 
 
+class ToolExecutionDecisionRequest(ApiRequestModel):
+    decision: str = Field(json_schema_extra={"enum": ["ACCEPT", "REJECT"]})
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def validate_decision(cls, value: object) -> str:
+        decision = str(value).strip().upper()
+        if decision not in {"ACCEPT", "REJECT"}:
+            raise ValueError("Tool execution decision must be ACCEPT or REJECT.")
+        return decision
+
+
+class ToolExecutionDecisionResponse(ApiBaseModel):
+    tool_execution: ToolExecutionResponse
+
+
 class AgentInterventionPlanRequest(ApiRequestModel):
     channels: list[str] = Field(default_factory=lambda: ["VOICE", "VISUAL"], min_length=1)
 

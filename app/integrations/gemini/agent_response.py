@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import httpx
 
 from app.core.config import Settings
-from app.policies.agent_demo_policy import AgentReplyPlan, ToolPlan
+from app.policies.agent_demo_policy import AgentReplyPlan, ToolPlan, validate_safety_guidance_text
 
 GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 logger = logging.getLogger(__name__)
@@ -38,6 +38,16 @@ AGENT_REPLY_RESPONSE_SCHEMA = {
     "required": ["intent", "text", "tool"],
     "additionalProperties": False,
     "propertyOrdering": ["intent", "text", "tool"],
+}
+SAFETY_GUIDANCE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "speechText": {"type": "string"},
+        "uiText": {"type": "string"},
+    },
+    "required": ["speechText", "uiText"],
+    "additionalProperties": False,
+    "propertyOrdering": ["speechText", "uiText"],
 }
 
 
@@ -110,6 +120,50 @@ class GeminiAgentResponseClient:
         }
         response_data = await self._request(model=model, api_key=api_key, payload=payload)
         return parse_agent_reply_response(response_data)
+
+    async def generate_safety_guidance(
+        self,
+        *,
+        context: Mapping[str, object],
+    ) -> tuple[str, str]:
+        api_key, model = self._required_settings()
+        payload = {
+            "systemInstruction": {
+                "parts": [
+                    {
+                        "text": (
+                            "운전자 안전 개입 안내 문구를 JSON으로 생성하세요. "
+                            "판단이나 개입 단계는 바꾸지 말고, 전달 표현만 자연스럽게 작성하세요. "
+                            "speechText는 음성 안내, uiText는 화면 요약입니다."
+                        )
+                    }
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": json.dumps(
+                                {"safetyInterventionContext": dict(context)},
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            )
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "responseFormat": {
+                    "text": {
+                        "mimeType": "APPLICATION_JSON",
+                        "schema": SAFETY_GUIDANCE_RESPONSE_SCHEMA,
+                    }
+                }
+            },
+        }
+        response_data = await self._request(model=model, api_key=api_key, payload=payload)
+        return parse_safety_guidance_response(response_data)
 
     def _required_settings(self) -> tuple[str, str]:
         api_key = self._settings.gemini_api_key.strip()
@@ -223,6 +277,24 @@ def parse_agent_reply_response(value: object) -> AgentReplyPlan:
             intent=intent.strip(),
         ),
     )
+
+
+def parse_safety_guidance_response(value: object) -> tuple[str, str]:
+    try:
+        payload = json.loads(_strip_complete_json_fence(_extract_response_text(value)))
+    except (TypeError, ValueError, GeminiProviderError) as exc:
+        raise _invalid_response("json_decode") from exc
+
+    if not isinstance(payload, dict):
+        raise _invalid_response("top_level_shape")
+    speech_text = payload.get("speechText")
+    ui_text = payload.get("uiText")
+    if not isinstance(speech_text, str) or not isinstance(ui_text, str):
+        raise _invalid_response("safety_guidance_text")
+    try:
+        return validate_safety_guidance_text(speech_text=speech_text, ui_text=ui_text)
+    except ValueError as exc:
+        raise _invalid_response("safety_guidance_policy") from exc
 
 
 def _extract_response_text(value: object) -> str:

@@ -97,6 +97,23 @@ class FakeBehaviorEventRepository:
             if event.session_id == session_id and event.status == BehaviorEventStatus.ACTIVE.value
         ]
 
+    async def count_recent_by_session_and_type(
+        self,
+        *,
+        session_id: str,
+        behavior_type: str,
+        started_after: datetime,
+        started_before: datetime,
+    ) -> int:
+        return sum(
+            1
+            for event in self.open_events
+            if event.session_id == session_id
+            and event.behavior_type == behavior_type
+            and event.started_at >= started_after
+            and event.started_at < started_before
+        )
+
     def add(self, event: BehaviorEvent) -> None:
         self.added_events.append(event)
         self.open_events.append(event)
@@ -238,7 +255,8 @@ async def test_started_transition_creates_behavior_event_and_records_runtime_id(
     assert event.speed_kph == Decimal("42.30")
     assert event.latitude == 37.5501
     assert event.longitude == 127.0734
-    assert event.risk_level == 0
+    assert event.risk_level == 3
+    assert event.recurrence_count == 0
     assert fake_session.flush_count == 1
     assert fake_session.commit_count == 1
     assert fake_session.rollback_count == 0
@@ -319,6 +337,35 @@ async def test_started_closes_other_active_behavior_before_creating_new_event() 
     assert other_event.resolution_reason == BehaviorResolutionReason.BEHAVIOR_CORRECTED.value
     assert other_event.ended_at == BASE_TIME.replace(tzinfo=None)
     assert other_event.duration_ms == 0
+
+
+@pytest.mark.asyncio
+async def test_started_transition_records_recent_recurrence_count() -> None:
+    registry, generation = await prepare_registry()
+    recent_event = active_event(
+        event_id="recent-event",
+        started_at=BASE_TIME.replace(tzinfo=None) - timedelta(minutes=5),
+    )
+    recent_event.status = BehaviorEventStatus.RESOLVED.value
+    old_event = active_event(
+        event_id="old-event",
+        started_at=BASE_TIME.replace(tzinfo=None) - timedelta(minutes=30),
+    )
+    old_event.status = BehaviorEventStatus.RESOLVED.value
+    fake_session = FakeSession()
+    fake_repository = FakeBehaviorEventRepository([recent_event, old_event])
+    service = make_service(registry, fake_session=fake_session, fake_repository=fake_repository)
+
+    result = await service.handle_transition(
+        session_id="session-1",
+        connection_generation=generation,
+        transition=make_transition(),
+    )
+
+    assert result.status == BehaviorEventWriteStatus.STARTED_CREATED
+    event = fake_repository.added_events[0]
+    assert event.recurrence_count == 1
+    assert event.risk_level == 3
 
 
 @pytest.mark.asyncio

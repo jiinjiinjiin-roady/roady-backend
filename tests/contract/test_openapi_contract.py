@@ -35,6 +35,7 @@ EXPECTED_REST_OPERATIONS = {
     ("POST", "/api/v1/agent/behavior-events/{behaviorEventId}/interventions"),
     ("POST", "/api/v1/agent/conversations/{conversationId}/messages"),
     ("POST", "/api/v1/agent/interventions/{interventionId}/responses"),
+    ("POST", "/api/v1/agent/tool-executions/{toolExecutionId}/decision"),
     ("GET", "/api/v1/profiles/{profileId}/reports/summary"),
     ("GET", "/api/v1/profiles/{profileId}/reports/narrative"),
     ("GET", "/api/v1/profiles/{profileId}/reports/behavior-events"),
@@ -75,6 +76,7 @@ EXPECTED_SUCCESS_RESPONSES = {
     ("POST", "/api/v1/agent/behavior-events/{behaviorEventId}/interventions"): {"201"},
     ("POST", "/api/v1/agent/conversations/{conversationId}/messages"): {"201"},
     ("POST", "/api/v1/agent/interventions/{interventionId}/responses"): {"201"},
+    ("POST", "/api/v1/agent/tool-executions/{toolExecutionId}/decision"): {"200"},
     ("GET", "/api/v1/profiles/{profileId}/reports/summary"): {"200"},
     ("GET", "/api/v1/profiles/{profileId}/reports/narrative"): {"200"},
     ("GET", "/api/v1/profiles/{profileId}/reports/behavior-events"): {"200"},
@@ -97,7 +99,7 @@ def test_openapi_exposes_only_current_rest_operation_matrix() -> None:
     }
 
     assert actual_operations == EXPECTED_REST_OPERATIONS
-    assert len(actual_operations) == 37
+    assert len(actual_operations) == 38
     assert not (actual_operations & FORBIDDEN_REST_OPERATIONS)
     assert all(path.startswith("/api/v1/") for _, path in actual_operations)
     assert all(not path.startswith("/api/v1/api/v1/") for _, path in actual_operations)
